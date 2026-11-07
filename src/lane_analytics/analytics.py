@@ -515,7 +515,10 @@ def write_reports(
         for item in intervals
     ]
     intervals_csv = target / "event_intervals.csv"
-    pd.DataFrame(interval_rows).to_csv(intervals_csv, index=False)
+    pd.DataFrame(
+        interval_rows,
+        columns=["interval_start", "interval_end", "count", "by_event_type", "by_class"],
+    ).to_csv(intervals_csv, index=False)
     paths["event_intervals_csv"] = str(intervals_csv)
 
     summary_json = target / "summary.json"
