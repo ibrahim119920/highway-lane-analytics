@@ -93,6 +93,28 @@ def test_duplicate_lane_names_are_rejected(tmp_path: Path):
         load_config(write_config(tmp_path, duplicate))
 
 
+def test_lane_index_is_scoped_per_direction(tmp_path: Path):
+    opposite = """
+  - name: southbound_lane_1
+    index: 1
+    direction: southbound
+    role: normal
+    polygon: [[0.05, 0.55], [0.35, 0.55], [0.35, 0.95], [0.05, 0.95]]
+"""
+    config = load_config(write_config(tmp_path, VALID.replace("occupancy:", opposite + "occupancy:")))
+    assert [(lane.name, lane.direction, lane.index) for lane in config.lanes] == [
+        ("lane_left", "northbound", 1),
+        ("lane_right", "northbound", 2),
+        ("southbound_lane_1", "southbound", 1),
+    ]
+
+
+def test_same_index_in_the_same_direction_is_rejected(tmp_path: Path):
+    duplicate = VALID.replace("    index: 2\n", "    index: 1\n")
+    with pytest.raises(ConfigError, match="duplicated for direction 'northbound'"):
+        load_config(write_config(tmp_path, duplicate))
+
+
 def test_missing_polygon_is_rejected(tmp_path: Path):
     text = VALID.replace(
         "    polygon: [[0.05, 0.1], [0.35, 0.1], [0.35, 0.95], [0.05, 0.95]]\n", ""

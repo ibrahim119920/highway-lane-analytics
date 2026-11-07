@@ -40,6 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--base-timestamp", help="override base_timestamp (ISO-8601)")
     analyze.add_argument("--frame-stride", type=int, help="process every Nth frame")
     analyze.add_argument("--max-frames", type=int, help="stop after N source frames")
+    analyze.add_argument(
+        "--start-frame", type=int, help="first source frame to process (seek before decoding)"
+    )
     analyze.add_argument("--model", help="override model.weights (e.g. yolov8n.pt)")
     analyze.add_argument("--device", help="cpu or GPU index, e.g. 0")
     analyze.add_argument("--imgsz", type=int, help="inference size")
@@ -54,6 +57,19 @@ def build_parser() -> argparse.ArgumentParser:
     preview.add_argument("--video", help="override video.path")
     preview.add_argument("--frame", type=int, default=0, help="source frame index to render")
     preview.add_argument("--out", default="output/lane_preview.jpg")
+
+    calibrate = subparsers.add_parser(
+        "calibrate",
+        help="render one frame with a labelled pixel/normalized grid for drawing lane polygons",
+    )
+    calibrate.add_argument("--config", default="config/config.yaml")
+    calibrate.add_argument("--video", help="override video.path")
+    calibrate.add_argument("--frame", type=int, default=0, help="source frame index to render")
+    calibrate.add_argument("--out", default="output/calibration/grid.jpg")
+    calibrate.add_argument("--step", type=int, default=50, help="grid spacing in pixels")
+    calibrate.add_argument(
+        "--no-polygons", action="store_true", help="hide the currently configured polygons"
+    )
 
     summarize = subparsers.add_parser("summarize", help="build reports from existing JSONL files")
     summarize.add_argument("events", help="path to an events JSONL or CSV file")
@@ -164,6 +180,94 @@ def _print_run_summary(result: "RunResult") -> None:
     print("Note: lane hogging is a rule-based indication, not a legal determination.")
 
 
+def _read_source_frame(video_path: str | Path, frame_index: int):
+    import cv2
+
+    source = Path(video_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Video not found: {source}")
+
+    capture = cv2.VideoCapture(str(source))
+    if not capture.isOpened():
+        raise RuntimeError(f"OpenCV could not open video: {source}")
+    try:
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        frame_index = max(0, frame_index)
+        if frame_count > 0:
+            frame_index = min(frame_index, frame_count - 1)
+        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            raise RuntimeError(f"Could not read frame {frame_index} from {source}")
+    finally:
+        capture.release()
+    return frame, frame_index
+
+
+def _draw_calibration_grid(frame, step: int = 50):
+    """Overlay a labelled pixel grid plus the normalized (0-1) every-0.1 ruler."""
+    import cv2
+
+    height, width = frame.shape[:2]
+    step = max(10, int(step))
+    for x in range(0, width, step):
+        major = (x % (step * 2)) == 0
+        cv2.line(frame, (x, 0), (x, height), (0, 120, 255) if major else (70, 70, 70), 1)
+        if major:
+            cv2.putText(
+                frame, f"{x}", (x + 2, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (0, 200, 255), 1, cv2.LINE_AA
+            )
+    for y in range(0, height, step):
+        major = (y % (step * 2)) == 0
+        cv2.line(frame, (0, y), (width, y), (0, 120, 255) if major else (70, 70, 70), 1)
+        if major:
+            cv2.putText(
+                frame, f"{y}", (2, y - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (0, 200, 255), 1, cv2.LINE_AA
+            )
+            cv2.putText(
+                frame,
+                f"{y / height:.2f}",
+                (width - 44, y - 3),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.34,
+                (0, 200, 255),
+                1,
+                cv2.LINE_AA,
+            )
+    return frame
+
+
+def _calibrate(args: argparse.Namespace) -> int:
+    import cv2
+
+    from .annotator import Annotator
+    from .pipeline import build_lane_regions
+
+    config = load_config(args.config)
+    if args.video:
+        config.video.path = args.video
+    config.validate()
+
+    frame, frame_index = _read_source_frame(config.video.path, args.frame)
+    if not args.no_polygons:
+        annotator = Annotator(build_lane_regions(config), config.camera_id)
+        annotator.draw_lanes(frame)
+    _draw_calibration_grid(frame, args.step)
+
+    target = Path(args.out)
+    ensure_dir(target.parent)
+    cv2.imwrite(str(target), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+    height, width = frame.shape[:2]
+    print(f"Wrote {target} (frame {frame_index}, {width}x{height})")
+    print("Grid: x/y ticks are source pixels; right-edge labels are normalized y.")
+    print("Read a lane edge at two heights, then divide x by width and y by height.")
+    print()
+    for lane in config.lanes:
+        coordinates = " -> ".join(f"({x:.4f}, {y:.4f})" for x, y in lane.polygon)
+        print(f"  {lane.name}: {coordinates}")
+    return 0
+
+
 def _preview_lanes(args: argparse.Namespace) -> int:
     import cv2
 
@@ -175,24 +279,7 @@ def _preview_lanes(args: argparse.Namespace) -> int:
         config.video.path = args.video
     config.validate()
 
-    source = Path(config.video.path)
-    if not source.exists():
-        raise FileNotFoundError(f"Video not found: {source}")
-
-    capture = cv2.VideoCapture(str(source))
-    if not capture.isOpened():
-        raise RuntimeError(f"OpenCV could not open video: {source}")
-    try:
-        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        frame_index = max(0, args.frame)
-        if frame_count > 0:
-            frame_index = min(frame_index, frame_count - 1)
-        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-        ok, frame = capture.read()
-        if not ok or frame is None:
-            raise RuntimeError(f"Could not read frame {frame_index} from {source}")
-    finally:
-        capture.release()
+    frame, frame_index = _read_source_frame(config.video.path, args.frame)
 
     lanes = build_lane_regions(config)
     annotator = Annotator(lanes, config.camera_id)
@@ -304,12 +391,16 @@ def main(argv: list[str] | None = None) -> int:
                 write_video=not args.no_video,
                 generate_reports=not args.no_reports,
                 run_id=args.run_id,
+                start_frame=args.start_frame or 0,
             )
             _print_run_summary(result)
             return 0
 
         if args.command == "preview-lanes":
             return _preview_lanes(args)
+
+        if args.command == "calibrate":
+            return _calibrate(args)
 
         if args.command == "summarize":
             from .analytics import load_events, load_tracks, summarize_events, write_reports

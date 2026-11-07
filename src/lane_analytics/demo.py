@@ -386,6 +386,7 @@ def run_demo(
     seed: int = 7,
     frame_stride: int = 1,
     preview_frame: int = 120,
+    start_frame: int = 0,
 ) -> DemoResult:
     """Generate the synthetic scene, run the full pipeline, and extract a preview."""
     if duration <= 0 or fps <= 0:
@@ -462,13 +463,14 @@ def run_demo(
         tracks_path=tracks_path,
         reports_dir=reports_dir,
         run_id="demo_run",
+        start_frame=start_frame,
     )
 
     preview_path = None
     if preview_frame >= 0:
         preview_path = _extract_preview(
             annotated_video,
-            preview_frame // max(1, frame_stride),
+            max(0, preview_frame - max(0, int(start_frame))) // max(1, frame_stride),
             target / "preview.jpg",
         )
 

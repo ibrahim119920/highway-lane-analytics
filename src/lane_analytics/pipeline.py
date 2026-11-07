@@ -47,6 +47,7 @@ class RunResult:
     report_paths: dict[str, str] = field(default_factory=dict)
     events: list[LaneEvent] = field(default_factory=list, repr=False)
     tracks: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    start_frame: int = 0
 
     @property
     def processing_fps(self) -> float:
@@ -83,8 +84,14 @@ def process_video(
     write_video: bool = True,
     generate_reports: bool = True,
     run_id: str | None = None,
+    start_frame: int = 0,
 ) -> RunResult:
-    """Run detection, tracking, lane analysis, annotation, and reporting."""
+    """Run detection, tracking, lane analysis, annotation, and reporting.
+
+    ``start_frame`` seeks into the source before decoding, so a long clip can be
+    processed in windows without re-decoding from the beginning. Timestamps still
+    refer to the original video timeline.
+    """
     config.validate()
 
     source_path = Path(video_path or config.video.path)
@@ -146,6 +153,11 @@ def process_video(
     output_fps = float(config.video.output_fps) if config.video.output_fps else source_fps / stride
     output_fps = max(output_fps, 1.0)
     max_frames = config.video.max_frames
+    first_frame = max(0, int(start_frame))
+    if total_frames > 0:
+        first_frame = min(first_frame, max(0, total_frames - 1))
+    if first_frame > 0:
+        capture.set(cv2.CAP_PROP_POS_FRAMES, first_frame)
 
     base_timestamp = (
         parse_timestamp(config.base_timestamp)
@@ -210,14 +222,18 @@ def process_video(
         ", ".join(lane.name for lane in lanes),
     )
 
-    frames_read = 0
+    frames_read = first_frame
     frames_processed = 0
-    last_processed_frame = 0
-    last_processed_time_s = 0.0
-    last_timestamp = timestamp_for_frame(base_timestamp, 0, source_fps)
+    last_processed_frame = first_frame
+    last_processed_time_s = first_frame / source_fps if source_fps > 0 else 0.0
+    last_timestamp = timestamp_for_frame(base_timestamp, first_frame, source_fps)
     event_records: list[dict[str, Any]] = []
     started = time.perf_counter()
-    processed_limit = min(total_frames, max_frames) if total_frames > 0 and max_frames else (max_frames or total_frames)
+    window_frames = max(0, total_frames - first_frame) if total_frames > 0 else 0
+    if max_frames is not None:
+        processed_limit = min(window_frames, max_frames) if window_frames else max_frames
+    else:
+        processed_limit = window_frames
 
     def emit(events: list[LaneEvent], handle) -> None:
         for event in events:
@@ -230,7 +246,7 @@ def process_video(
     try:
         with events_out_path.open("w", encoding="utf-8") as event_handle:
             while True:
-                if max_frames is not None and frames_read >= max_frames:
+                if max_frames is not None and frames_read - first_frame >= max_frames:
                     break
                 if not capture.grab():
                     if total_frames > 0 and frames_read < total_frames * 0.98:
@@ -285,8 +301,9 @@ def process_video(
                 if frames_processed % 100 == 0:
                     elapsed = max(time.perf_counter() - started, 1e-9)
                     throughput = frames_processed / elapsed
+                    read_in_run = frames_read - first_frame
                     if processed_limit:
-                        progress = f"{min(frames_processed, processed_limit) / processed_limit * 100:5.1f}%"
+                        progress = f"{min(read_in_run, processed_limit) / processed_limit * 100:5.1f}%"
                     else:
                         progress = "  n/a"
                     log.info(
@@ -310,7 +327,8 @@ def process_video(
             writer.release()
 
     processing_s = time.perf_counter() - started
-    duration_s = frames_read / source_fps if source_fps > 0 else 0.0
+    frames_in_run = max(0, frames_read - first_frame)
+    duration_s = frames_in_run / source_fps if source_fps > 0 else 0.0
 
     track_records = [summary.to_dict() for summary in tracker.track_summaries()]
     with tracks_out_path.open("w", encoding="utf-8") as track_handle:
@@ -321,6 +339,7 @@ def process_video(
         "run_id": run_id,
         "source_video": str(source_path),
         "detector": detector_name,
+        "start_frame": first_frame,
         "frames_read": frames_read,
         "frames_processed": frames_processed,
         "frame_stride": stride,
@@ -380,7 +399,7 @@ def process_video(
         total_events=len(event_records),
         total_vehicles=len(track_records),
         hogging_events=hogging_count,
-        frames_read=frames_read,
+        frames_read=frames_in_run,
         frames_processed=frames_processed,
         source_fps=source_fps,
         output_fps=output_fps,
@@ -390,4 +409,5 @@ def process_video(
         report_paths=report_paths,
         events=[LaneEvent(**record) for record in event_records],
         tracks=track_records,
+        start_frame=first_frame,
     )

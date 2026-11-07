@@ -30,6 +30,23 @@ def test_polygon_area_and_centroid():
     assert polygon_centroid(SQUARE) == (0.5, 0.5)
 
 
+def test_polygon_centroid_is_order_independent():
+    """Clockwise-ordered polygons must not return inverted centroids."""
+    clockwise = tuple(reversed(SQUARE))
+    cx, cy = polygon_centroid(clockwise)
+    assert abs(cx - 0.5) < 1e-9
+    assert abs(cy - 0.5) < 1e-9
+
+
+def test_trapezoid_centroid_inside_polygon():
+    trapezoid = ((0.2, 0.0), (0.8, 0.0), (1.0, 1.0), (0.0, 1.0))
+    centroid = polygon_centroid(trapezoid)
+    assert point_in_polygon(centroid, trapezoid)
+    assert 0.0 < centroid[0] < 1.0
+    assert 0.0 < centroid[1] < 1.0
+
+
+
 def test_lane_region_assignment():
     left = LaneRegion("left", 1, "normal", "south", ((0.0, 0.0), (0.4, 0.0), (0.4, 1.0), (0.0, 1.0)))
     right = LaneRegion("right", 2, "overtaking", "south", ((0.6, 0.0), (1.0, 0.0), (1.0, 1.0), (0.6, 1.0)))

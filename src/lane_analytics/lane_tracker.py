@@ -25,6 +25,8 @@ class _TrackState:
     last_time_s: float
     lane: LaneRegion | None = None
     stint: LaneStint | None = None
+    class_votes: Counter[str] = field(default_factory=Counter)
+    class_ids: dict[str, int] = field(default_factory=dict)
     pending_active: bool = False
     pending_lane: LaneRegion | None = None
     pending_since_frame: int = 0
@@ -143,8 +145,14 @@ class LaneTracker:
                 self._states[state.track_id] = state
                 self._tracks_seen += 1
 
-            state.class_id = int(obj.class_id)
-            state.class_name = str(obj.class_name)
+            # Vote on the class instead of trusting the latest frame: a single
+            # "bus" frame inside a car track must not trigger a heavy-vehicle rule.
+            observed_name = str(obj.class_name)
+            state.class_votes[observed_name] += 1
+            state.class_ids[observed_name] = int(obj.class_id)
+            dominant = state.class_votes.most_common(1)[0][0]
+            state.class_name = dominant
+            state.class_id = state.class_ids.get(dominant, int(obj.class_id))
             state.confidence = float(obj.confidence)
             state.last_frame = int(frame_index)
             state.last_timestamp = timestamp

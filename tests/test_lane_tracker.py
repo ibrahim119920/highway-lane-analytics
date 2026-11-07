@@ -12,6 +12,8 @@ LANES = [
     LaneRegion("lane_right", 2, "overtaking", "south", ((0.6, 0.0), (1.0, 0.0), (1.0, 1.0), (0.6, 1.0))),
 ]
 
+CLASS_IDS = {"car": 2, "bus": 5, "truck": 7}
+
 
 def make_object(
     track_id: int,
@@ -22,7 +24,7 @@ def make_object(
 ) -> TrackedObject:
     return TrackedObject(
         track_id=track_id,
-        class_id=2,
+        class_id=CLASS_IDS.get(class_name, 2),
         class_name=class_name,
         confidence=confidence,
         bbox=(x - 10, 80, x + 10, 100),
@@ -196,6 +198,32 @@ def test_low_confidence_objects_are_ignored():
     events = update(tracker, 20.0, 2, confidence=0.1)
     assert events == []
     assert tracker.snapshot()["tracks_seen"] == 0
+
+
+def test_single_misclassified_frame_does_not_trigger_heavy_vehicle_rule():
+    rule = HoggingRule(
+        name="heavy_in_overtaking_lane",
+        lanes=frozenset(),
+        lane_roles=frozenset({"overtaking"}),
+        classes=frozenset({"truck", "bus"}),
+        min_dwell_seconds=0.5,
+        severity="high",
+    )
+    tracker = make_tracker(hogging_rules=[rule])
+
+    for frame in range(1, 20):
+        class_name = "bus" if frame == 10 else "car"
+        events = update(tracker, 80.0, frame, class_name=class_name)
+        hogging = [event for event in events if event.event_type == "lane_hogging_indication"]
+        assert hogging == []
+
+    assert tracker.hogging_count == 0
+    final = tracker.finalize(frame_index=20, timestamp="2026-11-07T08:00:20", video_time_s=2.0)
+    assert all(event.object_class == "car" for event in final)
+    summary = tracker.track_summaries()[0]
+    assert summary.object_class == "car"
+    assert summary.class_id == 2
+
 
 
 def test_stale_track_is_finalized_and_summarized():

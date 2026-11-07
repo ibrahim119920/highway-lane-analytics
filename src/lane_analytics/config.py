@@ -141,7 +141,7 @@ class AppConfig:
         if not self.lanes:
             raise ConfigError("At least one lane polygon is required in 'lanes'")
         seen_names: set[str] = set()
-        seen_indices: set[int] = set()
+        seen_indices: set[tuple[str, int]] = set()
         for position, lane in enumerate(self.lanes):
             label = f"lanes[{position}]"
             if not str(lane.name).strip():
@@ -152,9 +152,14 @@ class AppConfig:
             if lane.index is not None:
                 if not isinstance(lane.index, int) or lane.index < 1:
                     raise ConfigError(f"{label}.index must be a positive integer or null")
-                if lane.index in seen_indices:
-                    raise ConfigError(f"{label}.index {lane.index} is duplicated")
-                seen_indices.add(lane.index)
+                # Lane indices are scoped per direction: both carriageways have a lane 1.
+                index_key = (str(lane.direction), int(lane.index))
+                if index_key in seen_indices:
+                    raise ConfigError(
+                        f"{label}.index {lane.index} is duplicated for "
+                        f"direction '{lane.direction}'"
+                    )
+                seen_indices.add(index_key)
             if not str(lane.role).strip():
                 raise ConfigError(f"{label}.role must not be empty")
             if len(lane.polygon) < 3:

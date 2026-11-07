@@ -63,23 +63,33 @@ def polygon_area(polygon: Sequence[Point]) -> float:
 
 
 def polygon_centroid(polygon: Sequence[Point]) -> Point:
-    """Centroid of a polygon; falls back to the vertex average when degenerate."""
-    area = polygon_area(polygon)
-    if area <= _EPS:
-        count = max(1, len(polygon))
+    """Centroid of a polygon; falls back to the vertex average when degenerate.
+
+    Vertex order may be clockwise or counter-clockwise: the signed area is used for
+    the normalization so the result stays inside the polygon either way.
+    """
+    signed_double_area = 0.0
+    count = len(polygon)
+    for index in range(count):
+        x1, y1 = polygon[index]
+        x2, y2 = polygon[(index + 1) % count]
+        signed_double_area += x1 * y2 - x2 * y1
+
+    if abs(signed_double_area) <= 2.0 * _EPS or count < 3:
+        count = max(1, count)
         return (
             sum(point[0] for point in polygon) / count,
             sum(point[1] for point in polygon) / count,
         )
+
     cx = cy = 0.0
-    count = len(polygon)
     for index in range(count):
         x1, y1 = polygon[index]
         x2, y2 = polygon[(index + 1) % count]
         cross = x1 * y2 - x2 * y1
         cx += (x1 + x2) * cross
         cy += (y1 + y2) * cross
-    factor = 1.0 / (6.0 * area)
+    factor = 1.0 / (3.0 * signed_double_area)
     return (cx * factor, cy * factor)
 
 
