@@ -67,19 +67,51 @@ logic, and [docs/LANE_RULES.md](docs/LANE_RULES.md) for rule design guidance.
 
 Requirements: Python 3.10+ and pip.
 
-### Option A - run in Google Colab (recommended)
+### Option A - run in Google Colab (batch + webhook replay)
 
-Open [`notebooks/colab_lane_occupancy.ipynb`](notebooks/colab_lane_occupancy.ipynb) and
-run the cells from top to bottom. The notebook:
+Open [`notebooks/colab_lane_occupancy.ipynb`](notebooks/colab_lane_occupancy.ipynb). The
+notebook is intentionally short; it only clones the repo, installs the package, and calls one
+activation function.
 
-1. optionally checks the Colab GPU,
-2. installs Ultralytics and the project,
-3. mounts Google Drive and selects a video,
-4. optionally records a clip from a public toll-road CCTV HLS stream,
-5. loads the calibrated camera profile (lanes and rules are already set),
-6. renders a calibration grid and a lane preview,
-7. runs YOLO + ByteTrack,
-8. plays the annotated video, shows the Markdown report, and copies outputs to Drive.
+Pick one source:
+
+| `source` | Input | What happens |
+| --- | --- | --- |
+| `"drive_zip"` | Public Google Drive zip/folder with the clips | Download, extract, process every clip |
+| `"live"` | HLS URL (default: the Semarang-Solo camera) | Record `record_seconds`, then process |
+
+```python
+from lane_analytics.colab import activate
+
+# 12 clips in a Drive zip
+activate(
+    source="drive_zip",
+    drive_url="https://drive.google.com/file/d/XXXX/view?usp=sharing",
+    base_timestamp="2026-11-07T23:00:00",   # optional; clips are chained by duration
+    webhook_url="https://xxxx.ngrok-free.app",
+    webhook_token="same-as-WEBHOOK_TOKEN",
+    speed=5,            # 1 = real time, 5 = 5x faster
+    window_seconds=5,   # micro-batch size in event-time seconds
+)
+
+# Live stream
+activate(
+    source="live",
+    record_seconds=300,
+    webhook_url="https://xxxx.ngrok-free.app",
+    webhook_token="same-as-WEBHOOK_TOKEN",
+    speed=1,
+)
+```
+
+`activate` runs the normal batch pipeline (`analyze`) with `--no-video`, then replays each run:
+events per window → `/webhook`, tracks once → `/webhook/tracks`, and run metadata with
+`complete: true` → `/webhook/run`. The webhook receiver, Kafka, pipeline, and dashboard belong
+to the separate pipeline project; this repo only sends.
+
+Useful parameters: `max_videos`, `device` (`"0"` on GPU), `imgsz`, `frame_stride`,
+`max_frames`, `base_timestamps={"clip01.mp4": "..."}`, `write_video=True`, `replay=False`,
+`dry_run=True`.
 
 Colab already ships CUDA-enabled PyTorch, so do **not** install a CPU torch wheel there.
 CPU inference also works: set `model.device: cpu`, `video.frame_stride: 2` or `3`, and
@@ -345,6 +377,32 @@ The first seven fields plus `lane_name` form the stable contract; the rest add
 traceability. See [docs/DATA_SCHEMA.md](docs/DATA_SCHEMA.md) and
 [docs/schema/lane_event.schema.json](docs/schema/lane_event.schema.json).
 
+## Webhook replay (simulated live feed)
+
+Batch artifacts can be replayed to a local webhook as micro-batches, which simulates a
+near-real-time feed for a separate data pipeline:
+
+```powershell
+lane-analytics replay `
+  --events output/events/km58_162550_final.jsonl `
+  --tracks output/tracks/km58_162550_final.jsonl `
+  --summary output/reports/km58_162550_final/summary.json `
+  --run-config output/reports/km58_162550_final/run_config.json `
+  --url https://xxxx.ngrok-free.app `
+  --token $env:WEBHOOK_TOKEN `
+  --speed 1 `
+  --window 5
+```
+
+The sender calls `GET /health` first, then posts events per 5-second event-time window,
+tracks once, and finally run metadata with `complete: true`. It retries `429`/`5xx` and
+network errors with exponential backoff. Use `--dry-run` to write the exact HTTP bodies to
+`output/replay/<run_id>/` without a receiver.
+
+The full transport contract (endpoints, payloads, topics) is in
+[docs/HANDOFF_DATA_PIPELINE_DASHBOARD.md](docs/HANDOFF_DATA_PIPELINE_DASHBOARD.md#45-kontrak-webhook-transport-handoff).
+This repository only sends; it has no receiver, Kafka client, pipeline, or dashboard.
+
 ## CLI
 
 | Command | Purpose |
@@ -355,6 +413,7 @@ traceability. See [docs/DATA_SCHEMA.md](docs/DATA_SCHEMA.md) and
 | `lane-analytics demo` | Generate and process a synthetic multi-lane scene offline. |
 | `lane-analytics summarize <events.jsonl>` | Rebuild reports from existing JSONL. |
 | `lane-analytics record` | Record a live HLS/HTTP stream for a fixed duration. |
+| `lane-analytics replay` | Replay precomputed events to the webhook (simulated live feed). |
 | `lane-analytics doctor` | Show dependency and environment status. |
 
 Run `lane-analytics <command> --help` for all options.
@@ -384,6 +443,8 @@ highway-lane-occupancy/
 │   ├── pipeline.py             # orchestration
 │   ├── demo.py                 # synthetic scene + manifest backend
 │   ├── recorder.py             # live HLS/HTTP recorder
+│   ├── replay.py               # webhook sender: paced event micro-batches
+│   ├── colab.py                # Colab activate(): Drive zip or live stream
 │   └── cli.py
 ├── tests/
 ├── requirements.txt            # full runtime

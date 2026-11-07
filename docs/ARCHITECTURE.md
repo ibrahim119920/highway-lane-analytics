@@ -163,6 +163,8 @@ At the end of the run:
 | `pipeline.py` | Frame loop and artifact orchestration. |
 | `demo.py` | Synthetic scene and manifest detector. |
 | `recorder.py` | Chunked HLS/HTTP recording with ffmpeg. |
+| `replay.py` | Paced webhook sender for precomputed events/tracks/run metadata. |
+| `colab.py` | One-call Colab activation: Drive zip or live stream, then replay. |
 | `cli.py` | Command-line entry points. |
 
 ## Extension points
@@ -172,8 +174,9 @@ At the end of the run:
 - **Speed estimation**: use anchor displacement per source second in a calibrated plane.
 - **Multi-camera identity**: use an external re-identification layer; `track_id` is only
   run-scoped.
-- **Streaming sink**: replace the JSONL writer with Kafka/HTTP/Parquet while keeping the
-  event contract.
+- **Webhook replay sink**: `replay.py` posts batch artifacts as paced micro-batches to a local
+  webhook. The receiver, Kafka, pipeline, and dashboard live in the separate pipeline project;
+  this repository only sends. See `docs/HANDOFF_DATA_PIPELINE_DASHBOARD.md`.
 - **Rule engine**: add relative-speed or vehicle-length conditions to `HoggingRule`.
 
 ## Known failure modes

@@ -1,4 +1,4 @@
-"""Command line interface: analyze, preview-lanes, summarize, demo, record, doctor."""
+"""Command line interface: analyze, preview-lanes, summarize, demo, record, replay, doctor."""
 
 from __future__ import annotations
 
@@ -118,6 +118,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("doctor", help="check the local environment and dependencies")
+
+    replay = subparsers.add_parser(
+        "replay", help="replay precomputed events to the webhook (simulated live feed)"
+    )
+    replay.add_argument("--events", required=True, help="path to an events JSONL file")
+    replay.add_argument("--tracks", help="path to the tracks JSONL file")
+    replay.add_argument("--summary", help="path to reports/<run_id>/summary.json")
+    replay.add_argument("--run-config", help="path to reports/<run_id>/run_config.json")
+    replay.add_argument(
+        "--url",
+        help="webhook base URL (e.g. https://abc.ngrok-free.app) or full /webhook URL",
+    )
+    replay.add_argument("--token", help="bearer token (default: WEBHOOK_TOKEN env var)")
+    replay.add_argument("--run-id", help="override the run id (default: events filename)")
+    replay.add_argument("--speed", type=float, default=1.0, help="1 = real time, 10 = 10x")
+    replay.add_argument(
+        "--window", type=float, default=5.0, dest="window_seconds",
+        help="event-time seconds per batch",
+    )
+    replay.add_argument("--batch-size", type=int, default=200, help="max events per POST")
+    replay.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout in seconds")
+    replay.add_argument("--retries", type=int, default=5, help="retry attempts per batch")
+    replay.add_argument("--no-health-check", action="store_true")
+    replay.add_argument(
+        "--no-skip-idle", action="store_true",
+        help="start at video t=0 instead of the first event",
+    )
+    replay.add_argument("--dry-run", action="store_true", help="write batches to disk, no HTTP")
+    replay.add_argument("--out", default="output/replay", help="dry-run output directory")
     return parser
 
 
@@ -325,6 +354,50 @@ def _record(args: argparse.Namespace) -> int:
     return 0
 
 
+def _replay(args: argparse.Namespace) -> int:
+    from .replay import ReplayError, replay_run
+
+    token = args.token or os.getenv("WEBHOOK_TOKEN")
+    try:
+        result = replay_run(
+            args.events,
+            tracks_path=args.tracks,
+            summary_path=args.summary,
+            config_path=args.run_config,
+            url=args.url,
+            token=token,
+            run_id=args.run_id,
+            speed=args.speed,
+            window_seconds=args.window_seconds,
+            max_batch=args.batch_size,
+            timeout=args.timeout,
+            retries=args.retries,
+            skip_health_check=args.no_health_check,
+            start_at_first_event=not args.no_skip_idle,
+            dry_run=args.dry_run,
+            dry_run_dir=args.out,
+        )
+    except ReplayError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print()
+    print("Replay summary")
+    print("--------------")
+    print(f"Run ID       : {result.run_id}")
+    print(f"Events       : {result.events_sent} in {result.event_batches} batch(es)")
+    if result.tracks_sent:
+        print(f"Tracks       : {result.tracks_sent} in {result.track_batches} batch(es)")
+    print(f"Run metadata : {'sent' if result.run_sent else 'not sent'}")
+    print(f"Retries      : {result.retries}")
+    print(f"Duplicates   : {result.duplicates} (reported by receiver)")
+    print(f"Event span   : {result.event_span_s:.1f}s")
+    print(f"Elapsed      : {result.elapsed_s:.1f}s")
+    if result.dry_run:
+        print(f"Batches dir  : {result.batches_dir}")
+    return 0
+
+
 def _doctor() -> int:
     print(f"highway-lane-occupancy {__version__}")
     print(f"Python      : {platform.python_version()} ({platform.platform()})")
@@ -447,6 +520,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "record":
             return _record(args)
+
+        if args.command == "replay":
+            return _replay(args)
 
         if args.command == "doctor":
             return _doctor()
