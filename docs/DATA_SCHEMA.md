@@ -51,7 +51,7 @@ same frame/timestamp.
 | `confidence` | number | yes | Detection confidence at the event frame, `0.0 - 1.0`. |
 | `event_type` | string | yes | One of the four event types above. |
 | `lane_name` | string | yes | Lane involved in the event (new lane for enter/change/hogging, old lane for exit). |
-| `lane_index` | integer or null | no | Configured lane index. |
+| `lane_index` | integer or null | no | Configured lane index, scoped per direction (`lane_name` is the unique key). |
 | `lane_role` | string | no | Configured role, e.g. `normal`, `overtaking`. |
 | `previous_lane` | string | no | Old lane for `lane_change` and `lane_enter` after a change. |
 | `dwell_seconds` | number | no | Continuous time in the lane at the event. For `lane_exit`/`lane_change`, the old stint duration. |

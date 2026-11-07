@@ -49,29 +49,34 @@ print(result.actual_seconds, result.complete)
 Use this responsibly: only the currently broadcasting window is available, and repeated
 aggressive requests should be avoided.
 
-### 5. Configure lane polygons
+### 5. Use the shipped camera profile (or calibrate a new one)
 
-The camera is fixed but the perspective is not top-down. Estimate each lane as a polygon
-in normalized coordinates (`0.0 - 1.0`). A quick workflow:
+`config/config.yaml` ships a profile calibrated for the Tj. Priok KM 58+400 (B) camera
+(1024x768, night, 18 fps): six lanes across both carriageways (three per direction), with
+the median-side lane marked as `overtaking` in each direction. The polygons were drawn on a
+1434x1076 capture (same 4:3 aspect) and normalized, so they apply to the 1024x768 video.
 
-1. Capture a frame:
-   ```python
-   import cv2
-   cap = cv2.VideoCapture(VIDEO_PATH)
-   ok, frame = cap.read()
-   cap.release()
-   cv2.imwrite("/content/frame.jpg", frame)
-   ```
-2. Open `/content/frame.jpg` and note the lane corners in pixels.
-3. Divide `x` by frame width and `y` by frame height.
-4. Write the polygons to `config/config.yaml`.
+For a different camera, calibrate against one frame:
 
-The notebook includes a Python cell that updates `config["lanes"]` and dumps the YAML.
+```powershell
+lane-analytics calibrate --video data/raw/clip.mp4 --frame 0 --out output/calibration/grid.jpg
+```
 
-### 6. Preview and calibrate
+The image contains the current polygons, a pixel grid every 50 px, and a normalized `y`
+ruler on the right edge. For each lane edge:
 
-```python
-!lane-analytics preview-lanes --config config/config.yaml --frame 0
+1. Read its pixel `x` at two heights (e.g. `y=400` and `y=700`).
+2. Divide `x` by the frame width and `y` by the frame height.
+3. Write the polygon into `config/config.yaml` (`lanes[].polygon`).
+4. Re-run `calibrate` until the edges sit on the painted lines.
+
+The notebook's configuration cell only rewrites the video path and device; it leaves the
+calibrated polygons alone.
+
+### 6. Preview and validate
+
+```powershell
+lane-analytics preview-lanes --video data/raw/clip.mp4 --frame 2160
 ```
 
 Open `output/lane_preview.jpg`. Each polygon should cover one lane over the part of the
@@ -83,6 +88,14 @@ Per-camera checks:
 - Does the anchor (`bottom_center`) stay inside a lane while a vehicle passes?
 - Are lane `role` values consistent with the hogging rules?
 - If traffic is reversed, update `direction` labels (they are informational).
+- How long is the observation window? Divide the zone length by typical speed and make
+  sure the hogging thresholds fit inside it.
+
+> **This camera is short-baseline.** The six polygons cover only the visible stretch in each
+> direction, so a vehicle stays inside them for roughly 0.5-3 s at highway speed. The
+> shipped thresholds (0.4 s heavy vehicle, 2.0 s car) are tuned for that window. A camera
+> with a longer view needs proportionally larger thresholds.
+
 
 ### 7. Run
 

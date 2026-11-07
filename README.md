@@ -8,6 +8,11 @@ hogging indications** plus lane-change events.
 The project is designed to run in **Google Colab** (CPU or GPU) and to export
 append-friendly JSONL that can be consumed by a real-time data pipeline.
 
+The repository ships a **calibrated profile** for a real night-time toll-road camera
+(Tj. Priok, KM 58+400 B, 1024x768 @ 18 fps): six lanes across both carriageways, with the
+median-side lane marked as the overtaking lane in each direction. Recalibrate the polygons
+for any other camera with `lane-analytics calibrate`.
+
 ![Annotated demo frame](docs/sample_output/preview.jpg)
 
 *Synthetic demo: three lane polygons, per-vehicle lane/dwell labels, lane-change and
@@ -71,14 +76,14 @@ run the cells from top to bottom. The notebook:
 2. installs Ultralytics and the project,
 3. mounts Google Drive and selects a video,
 4. optionally records a clip from a public toll-road CCTV HLS stream,
-5. writes lane polygons into `config/config.yaml`,
-6. renders a lane preview image for calibration,
+5. loads the calibrated camera profile (lanes and rules are already set),
+6. renders a calibration grid and a lane preview,
 7. runs YOLO + ByteTrack,
 8. plays the annotated video, shows the Markdown report, and copies outputs to Drive.
 
 Colab already ships CUDA-enabled PyTorch, so do **not** install a CPU torch wheel there.
 CPU inference also works: set `model.device: cpu`, `video.frame_stride: 2` or `3`, and
-optionally `model.imgsz: 480`.
+optionally `model.imgsz: 640`.
 
 ### Option B - offline synthetic demo (no YOLO, ~1 minute)
 
@@ -117,24 +122,27 @@ pip install -e .
 lane-analytics doctor
 ```
 
-1. Put a clip at `data/raw/traffic.mp4` (or pass `--video`).
-2. Draw the lane polygons against a frame:
+1. Put a clip at `data/raw/km58_400B_tj_priok_20261107_161545.mp4` (the shipped profile),
+   or pass `--video` for another file.
+2. Check the calibration against a real frame:
 
    ```powershell
-   lane-analytics preview-lanes --video data/raw/traffic.mp4 --frame 0
-   # inspect output/lane_preview.jpg, then edit config/config.yaml
+   lane-analytics calibrate --frame 2160
+   # output/calibration/grid.jpg: pixel grid + normalized y ruler + current polygons
+   lane-analytics preview-lanes --frame 2160
+   # inspect output/lane_preview.jpg, then edit config/config.yaml if needed
    ```
 
 3. Run the analysis:
 
    ```powershell
-   lane-analytics analyze --video data/raw/traffic.mp4
+   lane-analytics analyze --video data/raw/km58_400B_tj_priok_20261107_161545.mp4
    ```
 
    For a CPU test, cap the run:
 
    ```powershell
-   lane-analytics analyze --max-frames 300 --frame-stride 3 --no-video
+   lane-analytics analyze --max-frames 1080 --no-video
    ```
 
 The first YOLO run downloads `yolo11n.pt` automatically. Use `--model yolov8n.pt` for a
@@ -145,34 +153,52 @@ different checkpoint, or pass local weights.
 All runtime settings live in [`config/config.yaml`](config/config.yaml). Coordinates are
 **normalized** (`0.0 - 1.0`) so the same lane polygons work at any resolution.
 
-### Lanes
+### Camera profile (Tj. Priok KM 58+400 B)
 
-A lane is a polygon plus metadata used by rules and reports:
+![Lane mapping](docs/sample_output/km58_lane_mapping.jpg)
 
-```yaml
-lanes:
-  - name: lane_left
-    index: 1
-    direction: northbound
-    role: normal
-    polygon: [[0.08, 0.10], [0.34, 0.10], [0.34, 0.96], [0.08, 0.96]]
+The camera sits on the median, so both carriageways are visible. Six lanes are mapped,
+three per direction:
 
-  - name: lane_center
-    index: 2
-    direction: northbound
-    role: normal
-    polygon: [[0.345, 0.10], [0.60, 0.10], [0.60, 0.96], [0.345, 0.96]]
+| lanes | direction | role |
+| --- | --- | --- |
+| `nb_lane_1`, `nb_lane_2`, `nb_lane_3` | northbound (left carriageway, traffic receding) | normal, normal, `overtaking` |
+| `sb_lane_1`, `sb_lane_2`, `sb_lane_3` | southbound (right carriageway, traffic approaching) | normal, normal, `overtaking` |
 
-  - name: lane_right
-    index: 3
-    direction: northbound
-    role: overtaking
-    polygon: [[0.605, 0.10], [0.88, 0.10], [0.88, 0.96], [0.605, 0.96]]
+`lane_3` is the median-side lane in both directions, so the hogging rules target it through
+the `overtaking` role.
+
+The polygons were drawn on a **1434x1076** capture as eight boundary polylines (left edge,
+three dividers, right edge per direction) and normalized by that size. The capture has the
+same 4:3 aspect ratio as the 1024x768 recording, so the same normalized coordinates apply
+to the video. Each lane is built as `boundary[i] + reversed(boundary[i+1])`; the small
+corner triangles at the bottom-left and bottom-right between `lane1_2` and `lane2_3` are
+assigned to lane 2.
+
+The complete definition is in [`config/config.yaml`](config/config.yaml).
+
+**Measured on the 5-minute sample** (YOLO11n, CPU, `frame_stride: 2`, `imgsz: 960`):
+
+| Metric | Value |
+| --- | --- |
+| Tracked vehicles | 219 (163 car, 43 truck, 13 bus) |
+| Lane stints / lane changes | 86 / 12 |
+| Hogging indications | 8 (7 medium, 1 high) |
+| Throughput | ~8 fps (2728 processed frames in 5m37s) |
+
+### Recalibrating for another camera
+
+```powershell
+lane-analytics calibrate --video data/raw/other-camera.mp4 --frame 0
 ```
 
-`role` is a free label (`normal`, `overtaking`, `restricted`, ...). Rules can target a
-lane by name or by role. Polygons may overlap; when several contain the anchor point, the
-smallest area wins.
+This writes `output/calibration/grid.jpg` with a pixel grid and a normalized ruler. Read
+each lane edge at two heights, divide `x` by the frame width and `y` by the frame height,
+and replace the polygons in `config/config.yaml`. Repeat until the polygon edges sit on the
+painted lines.
+
+You can draw the coordinates on any capture of the camera as long as it has the same aspect
+ratio as the recording; only the normalized values are stored.
 
 ### Lane assignment
 
@@ -200,31 +226,46 @@ hogging:
     - name: heavy_vehicle_in_overtaking_lane
       lane_roles: [overtaking]
       classes: [truck, bus]
-      min_dwell_seconds: 3.0
+      min_dwell_seconds: 0.4
       severity: high
-      description: "Truk/bus menggunakan lajur overtaking melebihi batas waktu."
+      description: "Truk/bus berada di lajur cepat (median) - indikasi pelanggaran lajur."
 
     - name: prolonged_overtaking_lane
       lane_roles: [overtaking]
       classes: [car]
-      min_dwell_seconds: 12.0
+      min_dwell_seconds: 2.0
       severity: medium
-      description: "Mobil bertahan di lajur overtaking melebihi batas waktu."
+      description: "Mobil bertahan di lajur cepat (median) hampir sepanjang lintasan pandang."
 ```
+
+**These thresholds are specific to this camera.** The analysis zone covers the visible
+stretch in each direction, so dwell ranges from ~0.1 s to ~7 s depending on lane and
+direction. On the five-minute sample the overtaking lanes measured:
+
+| lane | class | dwell range | median |
+| --- | --- | --- | --- |
+| `nb_lane_3` | car | 0.56-3.00 s | ~2.0 s |
+| `nb_lane_3` | truck | 0.22-0.44 s | 0.33 s |
+| `sb_lane_3` | car | 0.33-2.78 s | ~1.0 s |
+| `sb_lane_3` | truck | 0.33-0.45 s | 0.39 s |
+
+The 2.0 s car threshold therefore flags the tail (roughly the upper third of overtaking-lane
+passes), not the majority. A camera with a longer view needs proportionally larger
+thresholds. See [docs/LANE_RULES.md](docs/LANE_RULES.md) for the calibration procedure.
 
 Each rule selects lanes by `lanes` **or** `lane_roles`, optionally filters classes, and
 triggers once a vehicle has stayed continuously in a matching lane for at least
 `min_dwell_seconds`. A rule that does not match is allowed usage. The output is an
-**indication**, not a legal enforcement decision. See
-[docs/LANE_RULES.md](docs/LANE_RULES.md).
+**indication**, not a legal enforcement decision.
 
 ### CPU settings
 
 | Setting | Effect |
 | --- | --- |
-| `video.frame_stride: 2` | Process every 2nd frame; roughly halves inference cost. |
+| `video.frame_stride: 2` | Process every 2nd frame (9 fps from the 18 fps source). |
 | `video.frame_stride: 3` | Faster still; dwell timing remains based on source FPS. |
-| `model.imgsz: 480` | Faster inference, fewer small-object detections. |
+| `model.imgsz: 960` | Default: near-native for 1024x768, catches small distant vehicles. |
+| `model.imgsz: 640` | ~2x faster, but loses some far-field detections. |
 | `model.weights: yolo11n.pt` | Smallest/fastest pretrained model in the family. |
 | `--no-video` | Skip annotation for maximum data throughput. |
 | `model.device: cpu` | Force CPU; set `0` for the first CUDA GPU. |
@@ -254,28 +295,29 @@ output/
     run_config.json
 ```
 
-A lane-hogging event:
+A lane-hogging event (real output from the sample clip):
 
 ```json
 {
-  "camera_id": "tmj_km486_500",
-  "timestamp": "2026-11-07T08:00:12",
-  "track_id": 12,
+  "camera_id": "tj_priok_km58_400b",
+  "timestamp": "2026-11-07T23:17:16",
+  "track_id": 433,
   "object_class": "truck",
-  "confidence": 0.88,
+  "confidence": 0.4906,
   "event_type": "lane_hogging_indication",
-  "lane_name": "lane_right",
+  "lane_name": "sb_lane_3",
   "lane_index": 3,
   "lane_role": "overtaking",
   "previous_lane": "",
-  "dwell_seconds": 4.2,
+  "dwell_seconds": 0.445,
+  "class_id": 7,
+  "frame_index": 1776,
+  "video_time_s": 98.656,
   "severity": "high",
   "rule_name": "heavy_vehicle_in_overtaking_lane",
-  "message": "Truk/bus menggunakan lajur overtaking melebihi batas waktu.",
-  "frame_index": 120,
-  "video_time_s": 12.0,
+  "message": "Truk/bus berada di lajur cepat (median) - indikasi pelanggaran lajur.",
   "schema_version": "1.0",
-  "event_id": "73db63605edc4a948e2c89581fbb6525"
+  "event_id": "ffb9d1f85d814b99894e6e02dbc4842d"
 }
 ```
 
@@ -288,8 +330,9 @@ traceability. See [docs/DATA_SCHEMA.md](docs/DATA_SCHEMA.md) and
 | Command | Purpose |
 | --- | --- |
 | `lane-analytics analyze` | Run detection, tracking, lane analysis, annotation, reports. |
-| `lane-analytics demo` | Generate and process a synthetic multi-lane scene offline. |
+| `lane-analytics calibrate` | Render a frame with a pixel/normalized grid for drawing lane polygons. |
 | `lane-analytics preview-lanes` | Draw configured lane polygons on one frame. |
+| `lane-analytics demo` | Generate and process a synthetic multi-lane scene offline. |
 | `lane-analytics summarize <events.jsonl>` | Rebuild reports from existing JSONL. |
 | `lane-analytics record` | Record a live HLS/HTTP stream for a fixed duration. |
 | `lane-analytics doctor` | Show dependency and environment status. |
@@ -362,8 +405,14 @@ validation, and an end-to-end synthetic demo run.
 - Designed for prerecorded files; the recorder can capture a live stream into a file first.
 - Lane polygons are manual. They must be calibrated per camera and do not follow a
   changing perspective automatically.
+- **Short-baseline cameras limit dwell semantics.** The shipped profile covers only the
+  visible stretch in each direction, so a vehicle is inside the polygons for roughly
+  0.5-3 s at highway speed. Hogging thresholds are scaled to that window and mean "stayed
+  in the lane for most of the visible pass".
 - Lane assignment is a point test, not a segmentation mask. A vehicle straddling a
   divider is assigned using its anchor and hysteresis.
+- The opposite carriageway is mapped with its own lanes and rules; `lane_index` is scoped
+  per direction (both directions have a lane 1), so use `lane_name` as the stable key.
 - No speed estimation yet. Hogging rules use dwell time, class, and lane, not relative
   speed or actual overtaking behaviour.
 - ByteTrack can switch IDs after long occlusions, which may split one vehicle into

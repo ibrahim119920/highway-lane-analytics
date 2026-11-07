@@ -1,0 +1,9 @@
+camera_id,timestamp,track_id,object_class,lane_name,lane_index,lane_role,dwell_seconds,severity,rule_name,message,frame_index,video_time_s,event_id
+tj_priok_km58_400b,2026-11-07T23:15:46,53,car,nb_lane_3,3,overtaking,2.11,medium,prolonged_overtaking_lane,Mobil bertahan di lajur cepat (median) hampir sepanjang lintasan pandang.,150,8.332,f45261a271574fcd8b6597f6c72d9b0e
+tj_priok_km58_400b,2026-11-07T23:16:15,129,car,nb_lane_3,3,overtaking,2.11,medium,prolonged_overtaking_lane,Mobil bertahan di lajur cepat (median) hampir sepanjang lintasan pandang.,678,37.662,d251aeb9339f4879b054a6d45a18caf2
+tj_priok_km58_400b,2026-11-07T23:16:47,292,car,nb_lane_3,3,overtaking,2.111,medium,prolonged_overtaking_lane,Mobil bertahan di lajur cepat (median) hampir sepanjang lintasan pandang.,1248,69.326,27765e8f63874e3ea77a92294be51da0
+tj_priok_km58_400b,2026-11-07T23:16:48,296,car,sb_lane_3,3,overtaking,2.111,medium,prolonged_overtaking_lane,Mobil bertahan di lajur cepat (median) hampir sepanjang lintasan pandang.,1272,70.659,7c889f70dac2430b8d0189344c0dd15f
+tj_priok_km58_400b,2026-11-07T23:16:58,376,car,nb_lane_3,3,overtaking,2.111,medium,prolonged_overtaking_lane,Mobil bertahan di lajur cepat (median) hampir sepanjang lintasan pandang.,1454,80.769,fd41e34711a643b28460c50debffa3fc
+tj_priok_km58_400b,2026-11-07T23:17:16,433,truck,sb_lane_3,3,overtaking,0.445,high,heavy_vehicle_in_overtaking_lane,Truk/bus berada di lajur cepat (median) - indikasi pelanggaran lajur.,1776,98.656,ffb9d1f85d814b99894e6e02dbc4842d
+tj_priok_km58_400b,2026-11-07T23:17:21,472,car,nb_lane_3,3,overtaking,2.0,medium,prolonged_overtaking_lane,Mobil bertahan di lajur cepat (median) hampir sepanjang lintasan pandang.,1868,103.766,c8aed594a2fb4e9b8800b833a1e9b36b
+tj_priok_km58_400b,2026-11-07T23:18:56,863,car,sb_lane_3,3,overtaking,2.111,medium,prolonged_overtaking_lane,Mobil bertahan di lajur cepat (median) hampir sepanjang lintasan pandang.,3570,198.311,ea1d25b56c0d4b9ba962070a2cf4eaef

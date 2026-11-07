@@ -1,0 +1,17 @@
+lane_name,lane_index,lane_role,object_class,vehicle_count,stint_count,total_dwell_s,avg_dwell_s,max_dwell_s,vehicle_share_pct,dwell_share_pct
+nb_lane_1,1,normal,bus,1,1,4.221,4.221,4.221,0.47,3.01
+nb_lane_1,1,normal,truck,9,9,30.217,3.357,6.888,4.19,21.57
+sb_lane_1,1,normal,bus,3,3,6.332,2.111,2.666,1.4,4.52
+sb_lane_1,1,normal,car,7,7,7.888,1.127,4.222,3.26,5.63
+sb_lane_1,1,normal,truck,3,3,2.334,0.778,1.0,1.4,1.67
+nb_lane_2,2,normal,bus,3,3,0.556,0.185,0.334,1.4,0.4
+nb_lane_2,2,normal,car,6,6,12.444,2.074,3.666,2.79,8.88
+nb_lane_2,2,normal,truck,12,14,27.001,1.929,6.777,5.58,19.27
+sb_lane_2,2,normal,bus,2,2,1.111,0.555,0.778,0.93,0.79
+sb_lane_2,2,normal,car,7,7,12.332,1.762,2.777,3.26,8.8
+sb_lane_2,2,normal,truck,5,5,4.888,0.978,2.444,2.33,3.49
+nb_lane_3,3,overtaking,car,9,9,18.219,2.024,2.999,4.19,13.0
+nb_lane_3,3,overtaking,truck,3,3,0.999,0.333,0.444,1.4,0.71
+sb_lane_3,3,overtaking,bus,2,2,0.444,0.222,0.333,0.93,0.32
+sb_lane_3,3,overtaking,car,10,10,10.334,1.033,2.778,4.65,7.38
+sb_lane_3,3,overtaking,truck,2,2,0.778,0.389,0.445,0.93,0.56

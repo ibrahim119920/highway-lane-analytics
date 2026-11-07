@@ -1,73 +1,135 @@
 # Intelligent Highway Lane Occupancy & Hogging Detection
-# Coordinates are normalized (0.0 - 1.0) so the same config works at any resolution.
+# Camera profile: Tj. Priok toll road, KM 58+400 (B), night, 1024x768 @ 18 fps.
+# Coordinates are normalized (0.0 - 1.0) so the profile is resolution independent.
+#
+# The camera sits on the median, so both carriageways are mapped, three lanes each:
+#   nb_lane_1/2/3 = northbound (left carriageway, traffic receding)
+#   sb_lane_1/2/3 = southbound (right carriageway, traffic approaching)
+# lane_3 is the median-side lane in both directions and carries the `overtaking` role.
 
-camera_id: camera_01
-base_timestamp: ""             # "" = run start time; set ISO-8601 for reproducible events
+camera_id: tj_priok_km58_400b
+base_timestamp: "2026-11-07T23:15:38"   # CCTV overlay time at frame 0; "" = run start
 
 model:
   weights: yolo11n.pt          # pretrained Ultralytics checkpoint (auto-downloaded)
   device: cpu                  # "cpu" or "0" for the first CUDA GPU (Colab)
-  imgsz: 640                   # inference size; lower = faster on CPU
-  conf: 0.35                   # detection confidence threshold
+  imgsz: 960                   # near-native for 1024x768; drop to 640 for slower CPUs
+  conf: 0.30                   # night footage: low-light vehicles score lower
   iou: 0.50                    # NMS IoU threshold
   tracker: bytetrack.yaml      # ships with Ultralytics
-  classes: [2, 5, 7]           # COCO: car, bus, truck
+  classes: [2, 5, 7]           # COCO: car, bus, truck (motorcycles excluded)
 
 video:
-  path: data/raw/traffic.mp4
-  frame_stride: 2              # process every Nth frame (2 = roughly half the compute)
+  path: data/raw/km58_400B_tj_priok_20261107_161545.mp4
+  frame_stride: 2              # 18 fps source -> ~9 fps processed
   max_frames: null             # optional cap on source frames read
   output_fps: null             # null = source_fps / frame_stride
 
-# Lane polygons. Draw them clockwise or counter-clockwise; order does not matter.
-# `role` is a free label used by hogging rules, e.g. normal / overtaking / restricted.
+# Lane polygons supplied for this camera, in the CCTV point of view.
+# Coordinates were drawn on a 1434x1076 capture and normalized by that size; the
+# aspect ratio matches the 1024x768 video, so the same polygons apply.
+#
+# Northbound = left carriageway (traffic receding). Southbound = right carriageway
+# (traffic approaching). lane_3 is the median-side lane in both directions, so it
+# carries the `overtaking` role used by the hogging rules.
+# The bottom-left and bottom-right corner triangles between lane1_2 and lane2_3 are
+# included in lane 2, per the calibration notes.
 lanes:
-  - name: lane_left
+  - name: nb_lane_1
     index: 1
     direction: northbound
     role: normal
-    polygon: [[0.08, 0.10], [0.34, 0.10], [0.34, 0.96], [0.08, 0.96]]
+    polygon: [[0.00000, 0.76580], [0.15760, 0.61896], [0.26709, 0.51766],
+              [0.35983, 0.43587], [0.38075, 0.41822], [0.41004, 0.41822],
+              [0.39470, 0.43773], [0.32845, 0.51580], [0.26290, 0.59387],
+              [0.15411, 0.72491], [0.00000, 0.92565]]
 
-  - name: lane_center
+  - name: nb_lane_2
     index: 2
     direction: northbound
     role: normal
-    polygon: [[0.345, 0.10], [0.60, 0.10], [0.60, 0.96], [0.345, 0.96]]
+    polygon: [[0.00000, 0.92565], [0.00000, 1.00000], [0.13738, 1.00000],
+              [0.27406, 0.73141], [0.35704, 0.57063], [0.40028, 0.49349],
+              [0.42957, 0.44145], [0.44212, 0.41822], [0.41004, 0.41822],
+              [0.39470, 0.43773], [0.32845, 0.51580], [0.26290, 0.59387],
+              [0.15411, 0.72491]]
 
-  - name: lane_right
+  - name: nb_lane_3
     index: 3
     direction: northbound
     role: overtaking
-    polygon: [[0.605, 0.10], [0.88, 0.10], [0.88, 0.96], [0.605, 0.96]]
+    polygon: [[0.13738, 1.00000], [0.27406, 0.73141], [0.35704, 0.57063],
+              [0.40028, 0.49349], [0.42957, 0.44145], [0.44212, 0.41822],
+              [0.47768, 0.41822], [0.47490, 0.43494], [0.46304, 0.48420],
+              [0.44770, 0.56041], [0.42469, 0.68866], [0.37308, 1.00000]]
+
+  - name: sb_lane_1
+    index: 1
+    direction: southbound
+    role: normal
+    polygon: [[1.00000, 0.68587], [0.77336, 0.51952], [0.72385, 0.48513],
+              [0.68550, 0.45911], [0.62762, 0.41729], [0.62692, 0.41822],
+              [0.58577, 0.41822], [0.60948, 0.44145], [0.69944, 0.52695],
+              [0.78452, 0.61059], [0.88633, 0.71561], [1.00000, 0.82900]]
+
+  - name: sb_lane_2
+    index: 2
+    direction: southbound
+    role: normal
+    polygon: [[1.00000, 0.82900], [1.00000, 1.00000], [0.92678, 1.00000],
+              [0.77127, 0.75743], [0.68061, 0.61710], [0.61367, 0.51394],
+              [0.55858, 0.43401], [0.54812, 0.41822], [0.58577, 0.41822],
+              [0.60948, 0.44145], [0.69944, 0.52695], [0.78452, 0.61059],
+              [0.88633, 0.71561]]
+
+  - name: sb_lane_3
+    index: 3
+    direction: southbound
+    role: overtaking
+    polygon: [[0.92678, 1.00000], [0.77127, 0.75743], [0.68061, 0.61710],
+              [0.61367, 0.51394], [0.55858, 0.43401], [0.54812, 0.41822],
+              [0.50837, 0.41822], [0.51325, 0.43866], [0.52999, 0.50558],
+              [0.55997, 0.63197], [0.59414, 0.77045], [0.64644, 1.00000]]
 
 occupancy:
-  anchor: bottom_center        # center | bottom_center | bottom_left | bottom_right | top_center
+  anchor: bottom_center        # tyre/road contact point for a receding vehicle
   min_confidence: 0.30
-  min_lane_frames: 2           # consecutive observations before a lane assignment changes
-  max_track_age_frames: 90     # finalize a track after this many frames without an update
+  min_lane_frames: 3           # ~0.22-0.33 s of evidence before a lane switch commits
+  max_track_age_frames: 36     # ~2 s at 18 fps: retire a track once it is gone
   emit_lane_enter: true
   emit_lane_exit: true
   emit_lane_change: true
 
+# IMPORTANT - dwell windows for this camera.
+# The calibrated zone covers a few tens of metres per direction, so "dwell" means
+# "time observed inside the zone", not a long-horizon occupancy measurement.
+# Observed on the 5-minute sample (overtaking lanes):
+#   nb_lane_3 cars   : 0.56 - 3.00 s (median ~2.0)
+#   nb_lane_3 trucks : 0.22 - 0.44 s
+#   sb_lane_3 cars   : 0.33 - 2.78 s (median ~1.0)
+#   sb_lane_3 trucks : 0.33 - 0.45 s
+# Thresholds are set to flag the tail, not the majority: ~2 s means "occupied the
+# overtaking lane for most of the visible pass". Raise them for a longer-view camera.
 hogging:
   enabled: true
   retrigger_after_seconds: 0   # 0 = one indication per (track, lane stint, rule)
   rules:
-    # Heavy vehicles are not allowed to occupy the overtaking lane for long.
+    # Heavy vehicles should not use the median-side (overtaking) lane at all.
+    # 0.4 s = about 4 processed frames; it avoids 1-2 frame boundary flicker.
     - name: heavy_vehicle_in_overtaking_lane
       lane_roles: [overtaking]
       classes: [truck, bus]
-      min_dwell_seconds: 3.0
+      min_dwell_seconds: 0.4
       severity: high
-      description: "Truk/bus menggunakan lajur overtaking melebihi batas waktu."
+      description: "Truk/bus berada di lajur cepat (median) - indikasi pelanggaran lajur."
 
-    # Cars may overtake, but staying in the overtaking lane too long is an indication.
+    # A car that stays in the overtaking lane for most of the visible pass.
     - name: prolonged_overtaking_lane
       lane_roles: [overtaking]
       classes: [car]
-      min_dwell_seconds: 12.0
+      min_dwell_seconds: 2.0
       severity: medium
-      description: "Mobil bertahan di lajur overtaking melebihi batas waktu."
+      description: "Mobil bertahan di lajur cepat (median) hampir sepanjang lintasan pandang."
 
 analytics:
   interval_seconds: 60         # time bucket for event timeseries
