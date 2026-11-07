@@ -92,7 +92,12 @@ lanes:
               [0.55997, 0.63197], [0.59414, 0.77045], [0.64644, 1.00000]]
 
 occupancy:
-  anchor: bottom_center        # tyre/road contact point for a receding vehicle
+  anchor: bottom_center        # fallback point for small/unclassified boxes
+  anchor_shift_enabled: true   # wide near-field boxes slide to the outer bottom corner
+  anchor_shift_small_bbox_px: 90    # no shift at or below this box width
+  anchor_shift_large_bbox_px: 250   # full shift to the corner at or above this width
+  direction_deadband_px: 2.0        # vertical motion needed to count as a direction vote
+  direction_min_votes: 2            # consistent votes before the direction is locked
   min_confidence: 0.30
   min_lane_frames: 3           # ~0.22-0.33 s of evidence before a lane switch commits
   max_track_age_frames: 36     # ~2 s at 18 fps: retire a track once it is gone

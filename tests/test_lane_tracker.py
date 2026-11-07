@@ -247,3 +247,75 @@ def test_anchor_center_can_be_selected():
     update(tracker, 20.0, 1)
     events = update(tracker, 20.0, 2)
     assert [event.event_type for event in events] == ["lane_enter"]
+
+
+def _directional_tracker(**kwargs) -> LaneTracker:
+    lanes = [
+        LaneRegion(
+            "left", 1, "normal", "northbound",
+            ((0.0, 0.0), (0.45, 0.0), (0.45, 1.0), (0.0, 1.0)),
+        ),
+        LaneRegion(
+            "right", 2, "normal", "southbound",
+            ((0.55, 0.0), (1.0, 0.0), (1.0, 1.0), (0.55, 1.0)),
+        ),
+    ]
+    defaults = dict(
+        frame_width=100,
+        frame_height=100,
+        min_lane_frames=1,
+        anchor_shift_enabled=True,
+        anchor_shift_small_bbox_px=10,
+        anchor_shift_large_bbox_px=24,
+    )
+    defaults.update(kwargs)
+    return LaneTracker(lanes, **defaults)
+
+
+def _push(tracker: LaneTracker, bbox, frame: int):
+    return tracker.update(
+        [TrackedObject(1, 7, "truck", 0.9, bbox)],
+        frame_index=frame,
+        timestamp=f"2026-11-07T08:00:{frame:02d}",
+        video_time_s=frame * 0.1,
+    )
+
+
+def test_wide_box_anchor_uses_approaching_direction():
+    """A wide southbound box slides to its bottom-right corner (x2)."""
+    tracker = _directional_tracker()
+    # Bottom-centre x=50 sits in the divider gap; width 24 triggers a full shift.
+    assert _push(tracker, (38.0, 60.0, 62.0, 80.0), 1) == []
+    assert _push(tracker, (38.0, 64.0, 62.0, 84.0), 2) == []  # first southbound vote
+    events = _push(tracker, (38.0, 68.0, 62.0, 88.0), 3)  # second vote -> southbound
+    assert [event.event_type for event in events] == ["lane_enter"]
+    assert events[0].lane_name == "right"
+
+
+def test_wide_box_anchor_uses_receding_direction():
+    """A wide northbound box slides to its bottom-left corner (x1)."""
+    tracker = _directional_tracker()
+    assert _push(tracker, (38.0, 64.0, 62.0, 84.0), 1) == []
+    assert _push(tracker, (38.0, 60.0, 62.0, 80.0), 2) == []  # first northbound vote
+    events = _push(tracker, (38.0, 56.0, 62.0, 76.0), 3)  # second vote -> northbound
+    assert [event.event_type for event in events] == ["lane_enter"]
+    assert events[0].lane_name == "left"
+
+
+def test_one_jitter_frame_does_not_lock_the_direction():
+    tracker = _directional_tracker()
+    assert _push(tracker, (38.0, 60.0, 62.0, 80.0), 1) == []
+    assert _push(tracker, (38.0, 58.0, 62.0, 78.0), 2) == []  # jitter -> one north vote
+    assert _push(tracker, (38.0, 64.0, 62.0, 84.0), 3) == []  # real motion -> one south vote
+    events = _push(tracker, (38.0, 68.0, 62.0, 88.0), 4)  # south wins 2-1
+    assert [event.event_type for event in events] == ["lane_enter"]
+    assert events[0].lane_name == "right"
+
+
+def test_wide_box_stays_on_bottom_centre_when_shift_is_disabled():
+    tracker = _directional_tracker(anchor_shift_enabled=False)
+    _push(tracker, (38.0, 60.0, 62.0, 80.0), 1)
+    _push(tracker, (38.0, 64.0, 62.0, 84.0), 2)
+    events = _push(tracker, (38.0, 68.0, 62.0, 88.0), 3)
+    assert events == []
+    assert tracker.snapshot()["tracks_seen"] == 1

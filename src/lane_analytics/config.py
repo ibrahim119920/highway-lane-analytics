@@ -51,6 +51,11 @@ class LaneConfig:
 @dataclass
 class OccupancyConfig:
     anchor: str = "bottom_center"
+    anchor_shift_enabled: bool = False
+    anchor_shift_small_bbox_px: float = 90.0
+    anchor_shift_large_bbox_px: float = 250.0
+    direction_deadband_px: float = 2.0
+    direction_min_votes: int = 2
     min_confidence: float = 0.3
     min_lane_frames: int = 2
     max_track_age_frames: int = 90
@@ -181,6 +186,17 @@ class AppConfig:
             raise ConfigError("occupancy.min_confidence must be between 0 and 1")
         if occupancy.min_lane_frames < 1:
             raise ConfigError("occupancy.min_lane_frames must be >= 1")
+        if occupancy.anchor_shift_small_bbox_px < 0:
+            raise ConfigError("occupancy.anchor_shift_small_bbox_px must be >= 0")
+        if occupancy.anchor_shift_large_bbox_px <= occupancy.anchor_shift_small_bbox_px:
+            raise ConfigError(
+                "occupancy.anchor_shift_large_bbox_px must be greater than "
+                "anchor_shift_small_bbox_px"
+            )
+        if occupancy.direction_deadband_px < 0:
+            raise ConfigError("occupancy.direction_deadband_px must be >= 0")
+        if occupancy.direction_min_votes < 1:
+            raise ConfigError("occupancy.direction_min_votes must be >= 1")
         if occupancy.max_track_age_frames < 1:
             raise ConfigError("occupancy.max_track_age_frames must be >= 1")
 
@@ -416,6 +432,12 @@ def describe_config(config: AppConfig) -> str:
     rule_summary = (
         ", ".join(rule.name for rule in config.hogging.rules) if config.hogging.rules else "(none)"
     )
+    anchor_summary = config.occupancy.anchor
+    if config.occupancy.anchor_shift_enabled:
+        anchor_summary += (
+            f" (adaptive: <= {config.occupancy.anchor_shift_small_bbox_px:.0f}px centre,"
+            f" >= {config.occupancy.anchor_shift_large_bbox_px:.0f}px outer corner)"
+        )
     return "\n".join(
         [
             f"camera_id       : {config.camera_id}",
@@ -425,7 +447,7 @@ def describe_config(config: AppConfig) -> str:
             f"source video    : {config.video.path}",
             f"frame stride    : {config.video.frame_stride}",
             f"lanes           : {lane_summary}",
-            f"anchor          : {config.occupancy.anchor}",
+            f"anchor          : {anchor_summary}",
             f"hogging         : {'enabled' if config.hogging.enabled else 'disabled'} "
             f"({rule_summary})",
         ]

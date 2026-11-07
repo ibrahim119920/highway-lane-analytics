@@ -27,6 +27,12 @@ class _TrackState:
     stint: LaneStint | None = None
     class_votes: Counter[str] = field(default_factory=Counter)
     class_ids: dict[str, int] = field(default_factory=dict)
+    direction: str = ""
+    direction_votes: dict[str, int] = field(
+        default_factory=lambda: {"northbound": 0, "southbound": 0}
+    )
+    previous_bottom_y: float | None = None
+    anchor_point: tuple[float, float] | None = None
     pending_active: bool = False
     pending_lane: LaneRegion | None = None
     pending_since_frame: int = 0
@@ -58,6 +64,11 @@ class LaneTracker:
         frame_height: int,
         camera_id: str = "",
         anchor: str = "bottom_center",
+        anchor_shift_enabled: bool = False,
+        anchor_shift_small_bbox_px: float = 90.0,
+        anchor_shift_large_bbox_px: float = 250.0,
+        direction_deadband_px: float = 2.0,
+        direction_min_votes: int = 2,
         min_confidence: float = 0.3,
         min_lane_frames: int = 2,
         max_track_age_frames: int = 90,
@@ -77,6 +88,11 @@ class LaneTracker:
         self._frame_height = int(frame_height)
         self._camera_id = camera_id
         self._anchor = anchor
+        self._anchor_shift_enabled = bool(anchor_shift_enabled)
+        self._anchor_shift_small = float(anchor_shift_small_bbox_px)
+        self._anchor_shift_large = float(anchor_shift_large_bbox_px)
+        self._direction_deadband = max(0.0, float(direction_deadband_px))
+        self._direction_min_votes = max(1, int(direction_min_votes))
         self._min_confidence = float(min_confidence)
         self._min_lane_frames = max(1, int(min_lane_frames))
         self._max_age = max(1, int(max_track_age_frames))
@@ -158,7 +174,24 @@ class LaneTracker:
             state.last_timestamp = timestamp
             state.last_time_s = float(video_time_s)
 
-            candidate = self._lane_for(obj)
+            # Travel direction from vertical box motion: receding (northbound) traffic
+            # moves up (y decreasing), approaching (southbound) traffic moves down.
+            # Require several consistent observations so a one-frame box jitter cannot
+            # lock the wrong direction.
+            bottom_y = float(obj.bbox[3])
+            if not state.direction and state.previous_bottom_y is not None:
+                delta_y = bottom_y - state.previous_bottom_y
+                if delta_y > self._direction_deadband:
+                    state.direction_votes["southbound"] += 1
+                elif delta_y < -self._direction_deadband:
+                    state.direction_votes["northbound"] += 1
+                north = state.direction_votes["northbound"]
+                south = state.direction_votes["southbound"]
+                if max(north, south) >= self._direction_min_votes and north != south:
+                    state.direction = "northbound" if north > south else "southbound"
+            state.previous_bottom_y = bottom_y
+
+            candidate = self._lane_for(obj, state)
             events.extend(
                 self._apply_candidate(
                     state,
@@ -203,8 +236,17 @@ class LaneTracker:
         return events
 
     # ------------------------------------------------------------- lane matching
-    def _lane_for(self, obj: TrackedObject) -> LaneRegion | None:
-        anchor_x, anchor_y = obj.anchor(self._anchor)
+    def _lane_for(self, obj: TrackedObject, state: _TrackState) -> LaneRegion | None:
+        if self._anchor_shift_enabled and state.direction:
+            anchor_x, anchor_y = obj.directional_anchor(
+                state.direction,
+                small_px=self._anchor_shift_small,
+                large_px=self._anchor_shift_large,
+                fallback=self._anchor,
+            )
+        else:
+            anchor_x, anchor_y = obj.anchor(self._anchor)
+        state.anchor_point = (anchor_x, anchor_y)
         point = (anchor_x / self._frame_width, anchor_y / self._frame_height)
         return assign_lane(point, self._lanes)
 
@@ -484,6 +526,8 @@ class LaneTracker:
                 "severity": state.active_hogging_severity,
                 "rule": state.active_hogging_rule,
                 "lane_changes": state.lane_changes,
+                "anchor": state.anchor_point,
+                "direction": state.direction,
             }
         return status
 

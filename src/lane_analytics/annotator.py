@@ -184,6 +184,14 @@ class Annotator:
         ):
             cv2.line(frame, start, end, color, 3, cv2.LINE_AA)
 
+        # Lane-assignment anchor (bottom-centre, or shifted for wide boxes).
+        anchor = status.get("anchor")
+        if isinstance(anchor, (tuple, list)) and len(anchor) == 2:
+            anchor_x = int(round(float(anchor[0])))
+            anchor_y = int(round(float(anchor[1])))
+            cv2.circle(frame, (anchor_x, anchor_y), 4, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(frame, (anchor_x, anchor_y), 6, color, 1, cv2.LINE_AA)
+
         lane_name = str(status.get("lane") or "")
         dwell = float(status.get("dwell_seconds") or 0.0)
         lane_text = f"{lane_name} {dwell:.1f}s" if lane_name else "lane n/a"

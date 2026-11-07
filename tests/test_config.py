@@ -159,6 +159,17 @@ def test_invalid_anchor_is_rejected(tmp_path: Path):
         load_config(write_config(tmp_path, text))
 
 
+def test_anchor_shift_thresholds_are_validated(tmp_path: Path):
+    text = VALID.replace(
+        "  anchor: bottom_center\n",
+        "  anchor: bottom_center\n"
+        "  anchor_shift_small_bbox_px: 60\n"
+        "  anchor_shift_large_bbox_px: 50\n",
+    )
+    with pytest.raises(ConfigError, match="anchor_shift_large_bbox_px"):
+        load_config(write_config(tmp_path, text))
+
+
 def test_missing_file_has_clear_error(tmp_path: Path):
     with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "does-not-exist.yaml")

@@ -204,10 +204,15 @@ ratio as the recording; only the normalized values are stored.
 
 ```yaml
 occupancy:
-  anchor: bottom_center        # center | bottom_center | bottom_left | bottom_right | top_center
+  anchor: bottom_center             # fallback: center | bottom_center | bottom_left | ...
+  anchor_shift_enabled: true        # slide wide near-field boxes to the outer corner
+  anchor_shift_small_bbox_px: 90    # no shift at or below this box width
+  anchor_shift_large_bbox_px: 250   # full shift at or above this width
+  direction_deadband_px: 2.0        # vertical motion needed to count as a direction vote
+  direction_min_votes: 2            # consistent votes before the direction is locked
   min_confidence: 0.30
-  min_lane_frames: 2           # consecutive observations before a switch is committed
-  max_track_age_frames: 90
+  min_lane_frames: 3                # consecutive observations before a switch is committed
+  max_track_age_frames: 36
   emit_lane_enter: true
   emit_lane_exit: true
   emit_lane_change: true
@@ -215,6 +220,21 @@ occupancy:
 
 `bottom_center` (the tyre/road contact point) is the safest default for perspective
 camera views. Use `center` for a straight top-down view.
+
+**Adaptive anchor for wide boxes.** With a high, oblique camera a near-field box can be
+wider than a lane, so its bottom-centre can land on the wrong side of a painted divider.
+When `anchor_shift_enabled` is on, the anchor slides from the bottom-centre toward the
+**outer bottom corner** as the box widens:
+
+- northbound (receding) traffic slides toward the **bottom-left** corner,
+- southbound (approaching) traffic slides toward the **bottom-right** corner.
+
+The direction comes from the track's vertical motion: receding vehicles move up
+(`y` decreasing), approaching vehicles move down. It is locked after
+`direction_min_votes` consistent observations, so a one-frame box jitter cannot flip it.
+The slide is linear between `anchor_shift_small_bbox_px` and
+`anchor_shift_large_bbox_px`. The anchor point is drawn as a small white dot inside each
+box in the annotated video, so you can verify it.
 
 ### Lane-hogging rules
 
@@ -375,8 +395,9 @@ highway-lane-occupancy/
 
 1. **Sample** every Nth source frame to control CPU cost while retaining source timing.
 2. **Detect + track** with `model.track(..., persist=True, tracker="bytetrack.yaml")`.
-3. **Map to lane**: take the vehicle anchor (`bottom_center` by default), normalize it,
-   and test it against the configured polygons.
+3. **Map to lane**: take the vehicle anchor (`bottom_center` by default, optionally
+   sliding to the outer bottom corner for wide near-field boxes), normalize it, and test
+   it against the configured polygons.
 4. **Stabilize**: only commit a lane assignment after `min_lane_frames` consecutive
    observations, preventing boundary flicker.
 5. **Measure**: keep one open lane stint per track. Closing a stint records exit time and

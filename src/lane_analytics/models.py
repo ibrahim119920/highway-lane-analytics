@@ -49,6 +49,43 @@ class TrackedObject:
         # Default and safe fallback: the tyre/road contact point.
         return ((x1 + x2) / 2.0, y2)
 
+    def directional_anchor(
+        self,
+        direction: str,
+        *,
+        small_px: float,
+        large_px: float,
+        fallback: str = "bottom_center",
+    ) -> AnchorType:
+        """Bottom anchor that slides to the outer bottom corner for wide boxes.
+
+        Near-field boxes are wide because of perspective and their bottom-centre can
+        land on the wrong side of a painted divider. ``northbound`` traffic slides
+        toward its bottom-left corner and ``southbound`` toward its bottom-right
+        corner (the outer edge, away from the median). The slide is linear between
+        ``small_px`` (no shift) and ``large_px`` (full shift to the corner).
+
+        Unknown directions fall back to ``anchor(fallback)``.
+        """
+        x1, y1, x2, y2 = self.bbox
+        if direction == "northbound":
+            edge_x = x1
+        elif direction == "southbound":
+            edge_x = x2
+        else:
+            return self.anchor(fallback)
+
+        span = float(large_px) - float(small_px)
+        width = self.width
+        if span <= 0:
+            weight = 1.0 if width >= float(large_px) else 0.0
+        else:
+            weight = (width - float(small_px)) / span
+        weight = min(1.0, max(0.0, weight))
+
+        center_x = (x1 + x2) / 2.0
+        return (center_x + (edge_x - center_x) * weight, y2)
+
     def as_int_bbox(self) -> tuple[int, int, int, int]:
         x1, y1, x2, y2 = self.bbox
         return int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2))

@@ -171,7 +171,8 @@ change.
 
 - `occupancy.min_lane_frames` (default 2) requires two consecutive observations before a
   lane change is committed. Increase it for noisy detectors or wide lane dividers.
-- `occupancy.anchor: bottom_center` reduces divider flicker in perspective views.
+- `occupancy.anchor: bottom_center` reduces divider flicker in perspective views; enable
+  the adaptive anchor (`anchor_shift_enabled`) when near-field boxes are wider than a lane.
 - Dwell starts at the first observation of the new lane, not at the confirmation frame.
 - A vehicle already transitioning to another lane is not evaluated for hogging during the
   pending transition.

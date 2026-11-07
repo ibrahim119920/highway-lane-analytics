@@ -63,13 +63,23 @@ For each detection:
 
 1. Choose an anchor point from the bounding box:
    `center`, `bottom_center` (default), `bottom_left`, `bottom_right`, or `top_center`.
-2. Normalize the anchor by frame width/height.
-3. Test it against every lane polygon with ray casting.
-4. If more than one polygon contains the point, choose the smallest polygon by area.
+2. Optionally apply the **adaptive anchor**: when `anchor_shift_enabled` is on and the
+   direction is known, a wide near-field box slides from the bottom-centre toward its
+   outer bottom corner (bottom-left for northbound, bottom-right for southbound). The
+   direction is derived from the vertical motion of the track and locked after
+   `direction_min_votes` consistent observations.
+3. Normalize the anchor by frame width/height.
+4. Test it against every lane polygon with ray casting.
+5. If more than one polygon contains the point, choose the smallest polygon by area.
 
 `bottom_center` is usually best for perspective highway cameras because the tyres touch
 the road surface, while the bbox centre can drift over a lane divider. `center` is fine
-for straight top-down views.
+for straight top-down views. For high, oblique cameras where near-field boxes are wider
+than a lane, enable the adaptive anchor.
+
+The annotator draws the anchor as a small white dot inside each box, which makes lane
+assignment errors easy to spot in the output video.
+
 
 ### 5. Hysteresis
 
