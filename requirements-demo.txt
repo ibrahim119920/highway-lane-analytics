@@ -1,0 +1,5 @@
+# Offline synthetic demo only: no PyTorch or YOLO needed.
+opencv-python>=4.9.0
+numpy>=1.24
+pandas>=2.0
+PyYAML>=6.0

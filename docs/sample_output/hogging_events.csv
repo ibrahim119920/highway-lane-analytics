@@ -1,0 +1,3 @@
+camera_id,timestamp,track_id,object_class,lane_name,lane_index,lane_role,dwell_seconds,severity,rule_name,message,frame_index,video_time_s,event_id
+demo_camera_01,2026-11-07T08:00:02,3,truck,lane_right,3,overtaking,2.0,high,heavy_vehicle_in_overtaking_lane,Truk/bus menggunakan lajur overtaking melebihi batas waktu.,21,2.1,73db63605edc4a948e2c89581fbb6525
+demo_camera_01,2026-11-07T08:00:13,6,car,lane_right,3,overtaking,6.0,medium,prolonged_overtaking_lane,Mobil bertahan di lajur overtaking melebihi batas waktu.,136,13.6,e4dedc3d4fc646539a63bfce2e388f23

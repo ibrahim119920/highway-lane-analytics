@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "highway-lane-occupancy"
+version = "0.1.0"
+description = "Detect, track, and analyze highway lane occupancy and lane hogging indications from traffic video."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = [
+    "computer-vision",
+    "traffic-analytics",
+    "lane-occupancy",
+    "lane-hogging",
+    "yolo",
+    "bytetrack",
+    "opencv",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+    "ultralytics>=8.3.0",
+    "opencv-python>=4.9.0",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "jsonschema>=4.20"]
+
+[project.scripts]
+lane-analytics = "lane_analytics.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"

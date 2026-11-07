@@ -1,0 +1,6 @@
+lane_name,lane_index,lane_role,object_class,vehicle_count,stint_count,total_dwell_s,avg_dwell_s,max_dwell_s,vehicle_share_pct,dwell_share_pct
+lane_left,1,normal,car,2,2,10.9,5.45,6.5,33.33,24.33
+lane_center,2,normal,bus,1,1,8.4,8.4,8.4,16.67,18.75
+lane_center,2,normal,car,2,2,4.5,2.25,2.6,33.33,10.04
+lane_right,3,overtaking,car,2,2,11.9,5.95,7.5,33.33,26.56
+lane_right,3,overtaking,truck,1,1,9.1,9.1,9.1,16.67,20.31

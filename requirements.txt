@@ -1,0 +1,9 @@
+# Full runtime requirements (real video analysis with YOLO + ByteTrack).
+# Colab already provides CUDA-enabled PyTorch, so only install ultralytics there.
+# For local CPU-only PyTorch, install torch first from the CPU wheel index:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+ultralytics>=8.3.0
+opencv-python>=4.9.0
+numpy>=1.24
+pandas>=2.0
+PyYAML>=6.0

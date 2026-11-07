@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/highway-lane-occupancy/lane_event.schema.json",
+  "title": "Highway lane occupancy event",
+  "description": "One lane-occupancy, lane-change, or lane-hogging indication event. Schema version 1.0.",
+  "type": "object",
+  "required": [
+    "camera_id",
+    "timestamp",
+    "track_id",
+    "object_class",
+    "confidence",
+    "event_type",
+    "lane_name"
+  ],
+  "properties": {
+    "camera_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+      "description": "Naive local ISO-8601 timestamp."
+    },
+    "track_id": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "object_class": {
+      "type": "string",
+      "minLength": 1,
+      "examples": ["car", "bus", "truck"]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "lane_enter",
+        "lane_exit",
+        "lane_change",
+        "lane_hogging_indication"
+      ]
+    },
+    "lane_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lane_index": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "lane_role": {
+      "type": "string"
+    },
+    "previous_lane": {
+      "type": "string"
+    },
+    "dwell_seconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "class_id": {
+      "type": "integer",
+      "minimum": -1
+    },
+    "frame_index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "video_time_s": {
+      "type": "number",
+      "minimum": 0
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["", "low", "medium", "high"]
+    },
+    "rule_name": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    }
+  },
+  "additionalProperties": true
+}

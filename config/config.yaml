@@ -1,0 +1,80 @@
+# Intelligent Highway Lane Occupancy & Hogging Detection
+# Coordinates are normalized (0.0 - 1.0) so the same config works at any resolution.
+
+camera_id: camera_01
+base_timestamp: ""             # "" = run start time; set ISO-8601 for reproducible events
+
+model:
+  weights: yolo11n.pt          # pretrained Ultralytics checkpoint (auto-downloaded)
+  device: cpu                  # "cpu" or "0" for the first CUDA GPU (Colab)
+  imgsz: 640                   # inference size; lower = faster on CPU
+  conf: 0.35                   # detection confidence threshold
+  iou: 0.50                    # NMS IoU threshold
+  tracker: bytetrack.yaml      # ships with Ultralytics
+  classes: [2, 5, 7]           # COCO: car, bus, truck
+
+video:
+  path: data/raw/traffic.mp4
+  frame_stride: 2              # process every Nth frame (2 = roughly half the compute)
+  max_frames: null             # optional cap on source frames read
+  output_fps: null             # null = source_fps / frame_stride
+
+# Lane polygons. Draw them clockwise or counter-clockwise; order does not matter.
+# `role` is a free label used by hogging rules, e.g. normal / overtaking / restricted.
+lanes:
+  - name: lane_left
+    index: 1
+    direction: northbound
+    role: normal
+    polygon: [[0.08, 0.10], [0.34, 0.10], [0.34, 0.96], [0.08, 0.96]]
+
+  - name: lane_center
+    index: 2
+    direction: northbound
+    role: normal
+    polygon: [[0.345, 0.10], [0.60, 0.10], [0.60, 0.96], [0.345, 0.96]]
+
+  - name: lane_right
+    index: 3
+    direction: northbound
+    role: overtaking
+    polygon: [[0.605, 0.10], [0.88, 0.10], [0.88, 0.96], [0.605, 0.96]]
+
+occupancy:
+  anchor: bottom_center        # center | bottom_center | bottom_left | bottom_right | top_center
+  min_confidence: 0.30
+  min_lane_frames: 2           # consecutive observations before a lane assignment changes
+  max_track_age_frames: 90     # finalize a track after this many frames without an update
+  emit_lane_enter: true
+  emit_lane_exit: true
+  emit_lane_change: true
+
+hogging:
+  enabled: true
+  retrigger_after_seconds: 0   # 0 = one indication per (track, lane stint, rule)
+  rules:
+    # Heavy vehicles are not allowed to occupy the overtaking lane for long.
+    - name: heavy_vehicle_in_overtaking_lane
+      lane_roles: [overtaking]
+      classes: [truck, bus]
+      min_dwell_seconds: 3.0
+      severity: high
+      description: "Truk/bus menggunakan lajur overtaking melebihi batas waktu."
+
+    # Cars may overtake, but staying in the overtaking lane too long is an indication.
+    - name: prolonged_overtaking_lane
+      lane_roles: [overtaking]
+      classes: [car]
+      min_dwell_seconds: 12.0
+      severity: medium
+      description: "Mobil bertahan di lajur overtaking melebihi batas waktu."
+
+analytics:
+  interval_seconds: 60         # time bucket for event timeseries
+
+output:
+  dir: output
+  video: null                  # null = output/videos/<run_id>_annotated.mp4
+  events: null                 # null = output/events/<run_id>.jsonl
+  tracks: null                 # null = output/tracks/<run_id>.jsonl
+  reports_dir: null            # null = output/reports/<run_id>
