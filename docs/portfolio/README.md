@@ -10,6 +10,7 @@ listed as **PENDING** with their target filenames and specs.
 | --- | --- | --- |
 | [`HANDOFF_CV.md`](./HANDOFF_CV.md) | CV / résumé writer | 12/40/90/150-word copy, résumé bullets, quotable metrics, skills, links, claims to avoid |
 | [`HANDOFF_WEB.md`](./HANDOFF_WEB.md) | Portfolio web editor | Page metadata, hero and section copy, architecture diagram, deep dives, dashboard description, results, challenges, gallery, SEO, page order |
+| [`CAPTURE_GUIDE.md`](./CAPTURE_GUIDE.md) | Whoever records the demo | Screenshot vs screen-record rules, exact scene list, specs, storyboards, QA checklist |
 | `README.md` | Both | Index and asset manifest |
 
 ## Project in one paragraph
@@ -70,6 +71,11 @@ All images below are in `docs/portfolio/assets/`.
 
 When a file arrives, keep the exact filename so the page build resolves it. If a clip is
 too large, re-encode to H.264 with a faststart flag and keep it under 15 MB.
+
+The full capture plan — when to use a screenshot vs a screen recording, optional
+pipeline/dashboard clips, specs, and storyboards — is in
+[`CAPTURE_GUIDE.md`](./CAPTURE_GUIDE.md). The required page-build filenames above remain
+the source of truth.
 
 ## How the available images were produced
 
