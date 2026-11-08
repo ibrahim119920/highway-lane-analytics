@@ -409,12 +409,20 @@ replay N× memperkecil lag simulasi tanpa mengubah `timestamp`.
 #### Perilaku sender (proyek ini)
 
 - Membaca `events/<run_id>.jsonl`, urut `video_time_s`.
+- Memvalidasi `timestamp` (WIB naive, tanpa `Z`/offset), `camera_id` per event, dan
+  `event_type` sebelum mengirim; pelanggaran dihentikan dengan pesan jelas.
 - Mengelompokkan ke window event-time (default 5 detik) atau maksimum 200 event.
 - `POST` per window; tidur sampai window berikutnya sesuai faktor kecepatan (`--speed`).
-- Retry 5× dengan exponential backoff + jitter untuk `429`, `5xx`, dan error jaringan.
-- Preflight `GET /health` sebelum mulai; berhenti dengan pesan jelas bila Kafka belum siap.
+- Retry 5× dengan exponential backoff + jitter untuk `408`, `425`, `429`, `5xx`,
+  `52x` (Cloudflare), dan error jaringan. `400/401/413/422` tidak di-retry.
+- Preflight `GET /health` (poll sampai `healthy` dan `sink.status == "ok"`) sebelum
+  mulai; berhenti dengan pesan jelas bila Kafka belum siap.
+- `202` dengan `rejected > 0` dianggap gagal; perbaiki payload lalu kirim ulang.
 - Setelah window terakhir: kirim `/webhook/tracks`, lalu `/webhook/run` dengan `complete: true`.
-- Mengirim header `ngrok-skip-browser-warning: true` untuk tunnel gratis.
+- `event_id` dipakai ulang saat retry; bila kosong, sender menurunkan UUID5 stabil
+  dari identitas event.
+- Target default `https://lane-api.syaifudin-fam.my.id` (Cloudflare Tunnel); header
+  `ngrok-skip-browser-warning: true` tetap dikirim agar kompatibel dengan tunnel lain.
 
 ---
 

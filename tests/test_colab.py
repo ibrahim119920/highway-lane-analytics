@@ -120,6 +120,51 @@ def test_activate_requires_drive_url(monkeypatch):
     with pytest.raises(ActivationError, match="drive_url"):
         activate(source="drive_zip")
 
+def test_activate_uses_production_pipeline_and_secret(tmp_path: Path, monkeypatch):
+    archive = tmp_path / "videos.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("clip.mp4", "dummy")
+
+    captured: dict = {}
+
+    monkeypatch.setattr(
+        "lane_analytics.colab._secret",
+        lambda name: {"PIPELINE_WEBHOOK_TOKEN": "secret-token"}.get(name),
+    )
+
+    def fake_process_one(video, **kwargs):
+        return SimpleNamespace(
+            total_vehicles=1,
+            total_events=1,
+            hogging_events=0,
+            evidence_events=0,
+            evidence_snapshots=0,
+            evidence_clips=0,
+            evidence_dir=None,
+            events_path=str(tmp_path / "events.jsonl"),
+            tracks_path=str(tmp_path / "tracks.jsonl"),
+            reports_dir=None,
+        )
+
+    def fake_replay(path, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(as_dict=lambda: {})
+
+    monkeypatch.setattr("lane_analytics.colab._process_one", fake_process_one)
+    monkeypatch.setattr("lane_analytics.colab.replay_run", fake_replay)
+
+    activate(
+        source="drive_zip",
+        zip_path=archive,
+        video_dir=tmp_path / "raw",
+        replay=True,
+    )
+
+    assert captured["url"] == "https://lane-api.syaifudin-fam.my.id"
+    assert captured["token"] == "secret-token"
+    assert captured["source"] == "kaggle-replay"
+
+
 def test_activate_accepts_session_and_run_id(tmp_path: Path, monkeypatch):
     archive = tmp_path / "videos.zip"
     with zipfile.ZipFile(archive, "w") as handle:

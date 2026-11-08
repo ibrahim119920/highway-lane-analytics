@@ -69,7 +69,7 @@ logic, and [docs/LANE_RULES.md](docs/LANE_RULES.md) for rule design guidance.
 
 Requirements: Python 3.10+ and pip.
 
-### Option A - run in Google Colab (batch + webhook replay)
+### Option A - run in Google Colab (batch + pipeline upload)
 
 Open [`notebooks/colab_lane_occupancy.ipynb`](notebooks/colab_lane_occupancy.ipynb). The
 notebook is intentionally short; it only clones the repo, installs the package, and calls one
@@ -85,13 +85,12 @@ Pick one source:
 ```python
 from lane_analytics.colab import activate
 
-# 12 clips in a Drive zip
+# 12 clips in a Drive zip. The token comes from the PIPELINE_WEBHOOK_TOKEN
+# secret; the default target is the production Cloudflare tunnel.
 activate(
     source="drive_zip",
     drive_url="https://drive.google.com/file/d/XXXX/view?usp=sharing",
     base_timestamp="2026-11-07T23:00:00",   # optional; clips are chained by duration
-    webhook_url="https://xxxx.ngrok-free.app",
-    webhook_token="same-as-WEBHOOK_TOKEN",
     speed=5,            # 1 = real time, 5 = 5x faster
     window_seconds=5,   # micro-batch size in event-time seconds
 )
@@ -100,8 +99,6 @@ activate(
 activate(
     source="live",
     record_seconds=300,
-    webhook_url="https://xxxx.ngrok-free.app",
-    webhook_token="same-as-WEBHOOK_TOKEN",
     speed=1,
 )
 ```
@@ -109,13 +106,16 @@ activate(
 `activate` runs the normal batch pipeline (`analyze`). Because evidence is enabled by default,
 it renders the annotated video so snapshots and clips show the detection boxes; pass
 `write_video=False` to skip rendering (evidence then uses the source video). After the batch it
-replays each run: events per window → `/webhook`, tracks once → `/webhook/tracks`, and run
-metadata with `complete: true` → `/webhook/run`. The webhook receiver, Kafka, pipeline, and
+sends each run to the pipeline: events per window → `/webhook`, tracks once → `/webhook/tracks`,
+and run metadata with `complete: true` → `/webhook/run`. The receiver, Kafka, pipeline, and
 dashboard belong to the separate pipeline project; this repo only sends.
 
 Useful parameters: `max_videos`, `device` (`"0"` on GPU), `imgsz`, `frame_stride`,
 `max_frames`, `base_timestamps={"clip01.mp4": "..."}`, `write_video=False`, `replay=False`,
-`dry_run=True`.
+`dry_run=True`, `webhook_url`, `webhook_token`.
+
+See [docs/PIPELINE_CLOUDFLARE.md](docs/PIPELINE_CLOUDFLARE.md) for the Cloudflare address,
+secrets, retry rules, and verification steps.
 
 Colab already ships CUDA-enabled PyTorch, so do **not** install a CPU torch wheel there.
 CPU inference also works: keep `model.device: cpu`, and if throughput matters more than
@@ -587,30 +587,44 @@ The first seven fields plus `lane_name` form the stable contract; the rest add
 traceability. See [docs/DATA_SCHEMA.md](docs/DATA_SCHEMA.md) and
 [docs/schema/lane_event.schema.json](docs/schema/lane_event.schema.json).
 
-## Webhook replay (simulated live feed)
+## Pipeline upload (production, Cloudflare Tunnel)
 
-Batch artifacts can be replayed to a local webhook as micro-batches, which simulates a
-near-real-time feed for a separate data pipeline:
+Batch artifacts can be replayed to the production pipeline as micro-batches, which
+simulates a near-real-time feed:
 
 ```powershell
+$env:PIPELINE_WEBHOOK_TOKEN = "<token from the operator>"
+
 lane-analytics replay `
   --events output/events/km58_162550_final.jsonl `
   --tracks output/tracks/km58_162550_final.jsonl `
   --summary output/reports/km58_162550_final/summary.json `
   --run-config output/reports/km58_162550_final/run_config.json `
-  --url https://xxxx.ngrok-free.app `
-  --token $env:WEBHOOK_TOKEN `
   --speed 1 `
-  --window 5
+  --window 5 `
+  --stats
 ```
 
-The sender calls `GET /health` first, then posts events per 5-second event-time window,
-tracks once, and finally run metadata with `complete: true`. It retries `429`/`5xx` and
-network errors with exponential backoff. Use `--dry-run` to write the exact HTTP bodies to
-`output/replay/<run_id>/` without a receiver.
+The default target is `https://lane-api.syaifudin-fam.my.id` (override with
+`PIPELINE_BASE_URL` or `--url`). The sender validates timestamps (`WIB` naive, no
+`Z`/offset), `camera_id` consistency, and `event_type` before sending; it waits for
+`/health` to report a healthy Kafka sink, posts events per 5-second window, tracks
+once, and finally run metadata with `complete: true`. It retries `408/425/429/5xx/52x`
+and network errors, and treats `202` with `rejected > 0` as a failure. `event_id` is
+reused across retries, so resending is idempotent.
+
+Check the Cloudflare → receiver → Kafka path without sending data:
+
+```powershell
+lane-analytics pipeline-status
+```
+
+Use `--dry-run` to write the exact HTTP bodies to `output/replay/<run_id>/` without a
+receiver.
 
 The full transport contract (endpoints, payloads, topics) is in
-[docs/HANDOFF_DATA_PIPELINE_DASHBOARD.md](docs/HANDOFF_DATA_PIPELINE_DASHBOARD.md#45-kontrak-webhook-transport-handoff).
+[docs/HANDOFF_DATA_PIPELINE_DASHBOARD.md](docs/HANDOFF_DATA_PIPELINE_DASHBOARD.md#45-kontrak-webhook-transport-handoff);
+the operational guide is [docs/PIPELINE_CLOUDFLARE.md](docs/PIPELINE_CLOUDFLARE.md).
 This repository only sends; it has no receiver, Kafka client, pipeline, or dashboard.
 
 ## CLI
@@ -625,7 +639,8 @@ This repository only sends; it has no receiver, Kafka client, pipeline, or dashb
 | `lane-analytics evidence` | Build snapshots + clips for an existing run. |
 | `lane-analytics tune` | Fit hogging thresholds against the manual label sheet. |
 | `lane-analytics record` | Record a live HLS/HTTP stream for a fixed duration. |
-| `lane-analytics replay` | Replay precomputed events to the webhook (simulated live feed). |
+| `lane-analytics replay` | Send precomputed artifacts to the production pipeline (Cloudflare Tunnel). |
+| `lane-analytics pipeline-status` | Check pipeline `/health` and `/stats`. |
 | `lane-analytics doctor` | Show dependency and environment status. |
 
 Run `lane-analytics <command> --help` for all options.
@@ -659,7 +674,7 @@ highway-lane-occupancy/
 │   ├── evidence.py             # snapshots + short clips per event
 │   ├── demo.py                 # synthetic scene + manifest backend
 │   ├── recorder.py             # live HLS/HTTP recorder
-│   ├── replay.py               # webhook sender: paced event micro-batches
+│   ├── replay.py               # pipeline sender: validated, paced micro-batches
 │   ├── colab.py                # Colab activate(): Drive zip or live stream
 │   └── cli.py
 ├── tests/

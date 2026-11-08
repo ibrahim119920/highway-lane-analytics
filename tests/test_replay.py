@@ -10,10 +10,15 @@ import pytest
 from lane_analytics.replay import (
     ReplayError,
     build_headers,
+    check_health,
     endpoint,
+    ensure_event_ids,
     group_windows,
     post_json,
     replay_run,
+    resolve_base_url,
+    resolve_token,
+    wait_healthy,
 )
 
 
@@ -222,7 +227,7 @@ def test_replay_posts_events_tracks_and_run(tmp_path: Path):
     assert result.tracks_sent == 1
     assert result.run_sent is True
     assert session.calls[1][1]["run_id"] == "run_a"
-    assert session.calls[1][1]["source"] == "colab-replay"
+    assert session.calls[1][1]["source"] == "kaggle-replay"
     assert session.calls[3][1]["complete"] is True
 
 
@@ -238,3 +243,143 @@ def test_replay_rejects_empty_camera(tmp_path: Path):
     )
     with pytest.raises(ReplayError, match="camera_id"):
         replay_run(events_path, dry_run=True, dry_run_dir=tmp_path)
+
+
+def test_post_json_retries_cloudflare_52x():
+    delays: list[float] = []
+    session = FakeSession([FakeResponse(522), FakeResponse(202, {"accepted": 1})])
+    response, retries = post_json(
+        session,
+        "https://lane-api.example/webhook",
+        {"events": []},
+        headers={},
+        timeout=1,
+        retries=2,
+        sleep=delays.append,
+    )
+    assert response.status_code == 202
+    assert retries == 1
+    assert len(delays) == 1
+
+
+def test_ensure_event_ids_are_stable_without_an_existing_id():
+    base = {
+        "camera_id": "cam_01",
+        "event_type": "lane_enter",
+        "track_id": 7,
+        "frame_index": 10,
+        "timestamp": "2026-11-08T06:58:12",
+        "video_time_s": 1.5,
+    }
+    first = ensure_event_ids([base], run_id="run_a", camera_id="cam_01")
+    second = ensure_event_ids([base], run_id="run_a", camera_id="cam_01")
+    assert first[0]["event_id"] == second[0]["event_id"]
+    assert len(first[0]["event_id"]) == 32
+
+
+def test_replay_rejects_timestamp_with_offset(tmp_path: Path):
+    event = make_event(0.0)
+    event["timestamp"] = "2026-11-08T06:58:12+07:00"
+    events_path = write_jsonl(tmp_path / "run_a.jsonl", [event])
+    with pytest.raises(ReplayError, match="timezone offset"):
+        replay_run(events_path, dry_run=True, dry_run_dir=tmp_path)
+
+
+def test_replay_rejects_utc_timestamp(tmp_path: Path):
+    event = make_event(0.0)
+    event["timestamp"] = "2026-11-08T06:58:12Z"
+    events_path = write_jsonl(tmp_path / "run_a.jsonl", [event])
+    with pytest.raises(ReplayError, match="not UTC"):
+        replay_run(events_path, dry_run=True, dry_run_dir=tmp_path)
+
+
+def test_replay_rejects_camera_mismatch(tmp_path: Path):
+    events_path = write_jsonl(
+        tmp_path / "run_a.jsonl",
+        [make_event(0.0), {**make_event(1.0), "camera_id": "cam_02"}],
+    )
+    with pytest.raises(ReplayError, match="differs from envelope"):
+        replay_run(events_path, dry_run=True, dry_run_dir=tmp_path)
+
+
+def test_replay_rejects_partial_accepted_batch(tmp_path: Path):
+    events_path = write_jsonl(tmp_path / "run_a.jsonl", [make_event(0.0)])
+    session = FakeSession([FakeResponse(202, {"accepted": 0, "rejected": 1})])
+    with pytest.raises(ReplayError, match="rejected 1 item"):
+        replay_run(
+            events_path,
+            url="https://lane-api.example",
+            token="secret",
+            run_id="run_a",
+            session=session,
+            sleep=lambda _: None,
+        )
+
+
+def test_replay_can_send_run_metadata_from_memory(tmp_path: Path):
+    events_path = write_jsonl(tmp_path / "run_a.jsonl", [make_event(0.0)])
+    session = FakeSession()
+    result = replay_run(
+        events_path,
+        summary_data={"run": {"run_id": "run_a"}, "total_events": 1},
+        config_data={"occupancy": {"assignment": "bbox_vote"}},
+        url="https://lane-api.example",
+        token="secret",
+        run_id="run_a",
+        session=session,
+        sleep=lambda _: None,
+    )
+    assert result.run_sent is True
+    assert session.calls[-1][0] == "https://lane-api.example/webhook/run"
+    body = session.calls[-1][1]
+    assert body["complete"] is True
+    assert body["config"]["occupancy"]["assignment"] == "bbox_vote"
+
+
+def test_wait_healthy_retries_until_sink_is_ready():
+    class FlakySession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        def get(self, url, headers=None, timeout=None):
+            self.attempts += 1
+            if self.attempts == 1:
+                return FakeResponse(200, {"healthy": True, "sink": {"status": "starting"}})
+            return FakeResponse(200, {"healthy": True, "sink": {"status": "ok"}})
+
+    delays: list[float] = []
+    session = FlakySession()
+    payload = wait_healthy(
+        "https://lane-api.example",
+        attempts=2,
+        delay=0,
+        session=session,
+        sleep=delays.append,
+    )
+    assert payload["sink"]["status"] == "ok"
+    assert session.attempts == 2
+    assert len(delays) == 1
+
+
+def test_check_health_rejects_unhealthy_payload():
+    session = FakeSession()
+    session.health = FakeResponse(200, {"healthy": False})
+    with pytest.raises(ReplayError, match="unhealthy"):
+        check_health("https://lane-api.example", session=session)
+
+
+def test_resolve_base_url_and_token_from_environment(monkeypatch):
+    monkeypatch.delenv("PIPELINE_BASE_URL", raising=False)
+    monkeypatch.delenv("WEBHOOK_URL", raising=False)
+    assert resolve_base_url() == "https://lane-api.syaifudin-fam.my.id"
+    monkeypatch.setenv("PIPELINE_BASE_URL", "https://staging.example/")
+    assert resolve_base_url() == "https://staging.example"
+
+    monkeypatch.delenv("PIPELINE_WEBHOOK_TOKEN", raising=False)
+    monkeypatch.delenv("WEBHOOK_TOKEN", raising=False)
+    assert resolve_token() is None
+    monkeypatch.setenv("WEBHOOK_TOKEN", "legacy")
+    assert resolve_token() == "legacy"
+    monkeypatch.setenv("PIPELINE_WEBHOOK_TOKEN", "new")
+    assert resolve_token() == "new"

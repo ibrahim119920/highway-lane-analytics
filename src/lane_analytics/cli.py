@@ -15,6 +15,8 @@ from . import __version__
 from .config import ConfigError, describe_config, load_config
 from .utils import ensure_dir, format_counts, human_duration, setup_logging
 
+DEFAULT_PIPELINE_URL = "https://lane-api.syaifudin-fam.my.id"
+
 if TYPE_CHECKING:
     from .pipeline import RunResult
 
@@ -206,7 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor", help="check the local environment and dependencies")
 
     replay = subparsers.add_parser(
-        "replay", help="replay precomputed events to the webhook (simulated live feed)"
+        "replay", help="replay precomputed events to the production pipeline"
     )
     replay.add_argument("--events", required=True, help="path to an events JSONL file")
     replay.add_argument("--tracks", help="path to the tracks JSONL file")
@@ -214,9 +216,18 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--run-config", help="path to reports/<run_id>/run_config.json")
     replay.add_argument(
         "--url",
-        help="webhook base URL (e.g. https://abc.ngrok-free.app) or full /webhook URL",
+        help=(
+            "pipeline base URL or full /webhook URL "
+            f"(default: PIPELINE_BASE_URL, then {DEFAULT_PIPELINE_URL})"
+        ),
     )
-    replay.add_argument("--token", help="bearer token (default: WEBHOOK_TOKEN env var)")
+    replay.add_argument(
+        "--token",
+        help="bearer token (default: PIPELINE_WEBHOOK_TOKEN, then WEBHOOK_TOKEN)",
+    )
+    replay.add_argument(
+        "--source", help="envelope source label (default: kaggle-replay)"
+    )
     replay.add_argument("--run-id", help="override the run id (default: events filename)")
     replay.add_argument("--speed", type=float, default=1.0, help="1 = real time, 10 = 10x")
     replay.add_argument(
@@ -228,11 +239,36 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--retries", type=int, default=5, help="retry attempts per batch")
     replay.add_argument("--no-health-check", action="store_true")
     replay.add_argument(
+        "--health-attempts", type=int, default=6,
+        help="how many times to poll /health before giving up",
+    )
+    replay.add_argument(
+        "--health-delay", type=float, default=10.0,
+        help="seconds between /health polls",
+    )
+    replay.add_argument(
+        "--no-complete", action="store_true",
+        help="send /webhook/run with complete=false (live sessions)",
+    )
+    replay.add_argument(
+        "--stats", action="store_true", help="print GET /stats after sending"
+    )
+    replay.add_argument(
         "--no-skip-idle", action="store_true",
         help="start at video t=0 instead of the first event",
     )
     replay.add_argument("--dry-run", action="store_true", help="write batches to disk, no HTTP")
     replay.add_argument("--out", default="output/replay", help="dry-run output directory")
+
+    status = subparsers.add_parser(
+        "pipeline-status", help="check pipeline /health and /stats (Cloudflare tunnel)"
+    )
+    status.add_argument(
+        "--url",
+        help=f"pipeline base URL (default: PIPELINE_BASE_URL, then {DEFAULT_PIPELINE_URL})",
+    )
+    status.add_argument("--token", help="bearer token (default: PIPELINE_WEBHOOK_TOKEN)")
+    status.add_argument("--timeout", type=float, default=10.0)
     return parser
 
 
@@ -530,24 +566,37 @@ def _record(args: argparse.Namespace) -> int:
 
 
 def _replay(args: argparse.Namespace) -> int:
-    from .replay import ReplayError, replay_run
+    from .replay import ReplayError, replay_run, resolve_base_url, resolve_token
 
-    token = args.token or os.getenv("WEBHOOK_TOKEN")
+    url = resolve_base_url(args.url)
+    token = resolve_token(args.token)
+    if not args.dry_run and not token:
+        print(
+            "error: pipeline token is empty. Set PIPELINE_WEBHOOK_TOKEN "
+            "(or WEBHOOK_TOKEN / --token from your secrets).",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
         result = replay_run(
             args.events,
             tracks_path=args.tracks,
             summary_path=args.summary,
             config_path=args.run_config,
-            url=args.url,
+            url=url,
             token=token,
             run_id=args.run_id,
+            source=args.source,
             speed=args.speed,
             window_seconds=args.window_seconds,
             max_batch=args.batch_size,
             timeout=args.timeout,
             retries=args.retries,
             skip_health_check=args.no_health_check,
+            health_attempts=args.health_attempts,
+            health_delay=args.health_delay,
+            complete=not args.no_complete,
             start_at_first_event=not args.no_skip_idle,
             dry_run=args.dry_run,
             dry_run_dir=args.out,
@@ -560,16 +609,91 @@ def _replay(args: argparse.Namespace) -> int:
     print("Replay summary")
     print("--------------")
     print(f"Run ID       : {result.run_id}")
+    print(f"Camera ID    : {result.camera_id}")
+    if result.base_url:
+        print(f"Pipeline     : {result.base_url}")
     print(f"Events       : {result.events_sent} in {result.event_batches} batch(es)")
     if result.tracks_sent:
         print(f"Tracks       : {result.tracks_sent} in {result.track_batches} batch(es)")
-    print(f"Run metadata : {'sent' if result.run_sent else 'not sent'}")
+    print(
+        f"Run metadata : {'sent (complete=true)' if result.run_sent else 'not sent'}"
+    )
+    print(f"Accepted     : {result.accepted} (reported by receiver)")
     print(f"Retries      : {result.retries}")
     print(f"Duplicates   : {result.duplicates} (reported by receiver)")
+    print(f"Rejected     : {result.rejected} (reported by receiver)")
     print(f"Event span   : {result.event_span_s:.1f}s")
     print(f"Elapsed      : {result.elapsed_s:.1f}s")
     if result.dry_run:
         print(f"Batches dir  : {result.batches_dir}")
+    elif result.run_sent:
+        print(f"Dashboard    : https://lane.syaifudin-fam.my.id")
+
+    if args.stats and not result.dry_run:
+        try:
+            from .replay import fetch_stats
+
+            stats = fetch_stats(url, token=token, timeout=args.timeout)
+        except ReplayError as exc:
+            print(f"warning: could not read /stats: {exc}", file=sys.stderr)
+        else:
+            print()
+            print("Pipeline /stats")
+            print("---------------")
+            for key in (
+                "requests",
+                "accepted_events",
+                "duplicate_events",
+                "rejected_events",
+                "accepted_tracks",
+                "accepted_runs",
+            ):
+                if key in stats:
+                    print(f"{key:<18}: {stats[key]}")
+            if "stats" in stats and isinstance(stats["stats"], dict):
+                for key, value in stats["stats"].items():
+                    print(f"{key:<18}: {value}")
+    return 0
+
+
+def _pipeline_status(args: argparse.Namespace) -> int:
+    from .replay import ReplayError, fetch_stats, resolve_base_url, resolve_token, wait_healthy
+
+    url = resolve_base_url(args.url)
+    token = resolve_token(args.token)
+    try:
+        health = wait_healthy(url, token=token, attempts=1, timeout=args.timeout)
+    except ReplayError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Pipeline : {url}")
+    print(f"Health   : {health.get('status', health.get('healthy', 'ok'))}")
+    sink = health.get("sink") or {}
+    if isinstance(sink, dict) and sink:
+        print(f"Sink     : {sink.get('status', sink)}")
+    try:
+        stats = fetch_stats(url, token=token, timeout=args.timeout)
+    except ReplayError as exc:
+        print(f"warning: /stats unavailable: {exc}", file=sys.stderr)
+        return 0
+    flat = dict(stats)
+    nested = flat.pop("stats", None)
+    if isinstance(nested, dict):
+        flat.update(nested)
+    print()
+    print("Counters")
+    print("--------")
+    for key in (
+        "requests",
+        "accepted_events",
+        "duplicate_events",
+        "rejected_events",
+        "accepted_tracks",
+        "accepted_runs",
+    ):
+        if key in flat:
+            print(f"{key:<18}: {flat[key]}")
     return 0
 
 
@@ -736,6 +860,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "replay":
             return _replay(args)
+
+        if args.command == "pipeline-status":
+            return _pipeline_status(args)
 
         if args.command == "doctor":
             return _doctor()

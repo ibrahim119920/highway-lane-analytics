@@ -4,14 +4,15 @@ The notebook only needs to clone the repository and call :func:`activate`:
 
     from lane_analytics.colab import activate
 
-    activate(source="drive_zip", drive_url="https://drive.google.com/...",
-             webhook_url="https://xxxx.ngrok-free.app", webhook_token="...")
+    activate(source="drive_zip", drive_url="https://drive.google.com/...")
 
-    activate(source="live", record_seconds=300,
-             webhook_url="https://xxxx.ngrok-free.app", webhook_token="...")
+    activate(source="live", record_seconds=300)
 
 The helper downloads or records the footage, runs the batch vision pipeline, and
-replays the artifacts to the local webhook. It never receives data.
+replays the artifacts to the production pipeline through the Cloudflare Tunnel. The
+token is read from the ``PIPELINE_WEBHOOK_TOKEN`` secret; the base URL defaults to
+``https://lane-api.syaifudin-fam.my.id`` and can be overridden with
+``PIPELINE_BASE_URL``. It never receives data.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from .config import load_config
-from .replay import ReplayResult, replay_run
+from .replay import DEFAULT_BASE_URL, DEFAULT_SOURCE, ReplayResult, replay_run
 from .utils import ensure_dir
 
 log = logging.getLogger(__name__)
@@ -394,10 +395,13 @@ def activate(
     replay: bool = True,
     webhook_url: str | None = None,
     webhook_token: str | None = None,
+    replay_source: str | None = None,
     speed: float = 1.0,
     window_seconds: float = 5.0,
     gap_seconds: float = 0.0,
     retries: int = 5,
+    health_attempts: int = 6,
+    health_delay: float = 10.0,
     dry_run: bool = False,
     skip_health_check: bool = False,
     session_id: str | None = None,
@@ -419,7 +423,9 @@ def activate(
         then process that recording.
 
     When ``replay`` is true, each run is posted to ``webhook_url`` (falling back
-    to the ``WEBHOOK_URL`` secret) using :func:`lane_analytics.replay.replay_run`.
+    to the ``PIPELINE_BASE_URL``/``WEBHOOK_URL`` secret and then the production
+    Cloudflare hostname) with the ``PIPELINE_WEBHOOK_TOKEN`` secret, using
+    :func:`lane_analytics.replay.replay_run`.
 
     ``write_video=None`` renders the annotated video when evidence is enabled, so the
     per-event snapshots and clips show the detection boxes. Pass ``False`` to skip it.
@@ -431,10 +437,13 @@ def activate(
     if device is None:
         device = _default_device()
     if not url_is_set(webhook_url):
-        webhook_url = _secret("WEBHOOK_URL") or webhook_url
+        webhook_url = (
+            _secret("PIPELINE_BASE_URL")
+            or _secret("WEBHOOK_URL")
+            or DEFAULT_BASE_URL
+        )
     if not webhook_token:
-        webhook_token = _secret("WEBHOOK_TOKEN")
-
+        webhook_token = _secret("PIPELINE_WEBHOOK_TOKEN") or _secret("WEBHOOK_TOKEN")
     result = ActivationResult(source=kind)
 
     if kind == "drive_zip":
@@ -445,6 +454,14 @@ def activate(
                 "drive_url (or zip_path) is required for source='drive_zip'. "
                 "Pass the public Google Drive link or set the DRIVE_ZIP_URL secret."
             )
+
+    if replay and not dry_run and not webhook_token:
+        raise ActivationError(
+            "replay=True needs a pipeline token. Add PIPELINE_WEBHOOK_TOKEN to "
+            "Colab/Kaggle Secrets, or pass webhook_token=..."
+        )
+
+    if kind == "drive_zip":
         videos, base_map = _prepare_archive_source(
             drive_url=drive_url,
             zip_path=zip_path,
@@ -538,9 +555,12 @@ def activate(
                     url=webhook_url,
                     token=webhook_token,
                     run_id=effective_run_id,
+                    source=replay_source or DEFAULT_SOURCE,
                     speed=speed,
                     window_seconds=window_seconds,
                     retries=retries,
+                    health_attempts=health_attempts,
+                    health_delay=health_delay,
                     dry_run=dry_run,
                     skip_health_check=skip_health_check,
                 )
