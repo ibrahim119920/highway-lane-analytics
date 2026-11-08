@@ -68,3 +68,23 @@ def test_lane_event_without_index_matches_schema():
         dwell_seconds=2.5,
     )
     validate(event.to_dict(), schema())
+
+def test_session_aware_event_matches_schema():
+    event = LaneEvent(
+        camera_id="camera_01",
+        timestamp="2026-11-07T08:00:00",
+        track_id=7,
+        object_class="car",
+        confidence=0.91,
+        event_type="lane_enter",
+        lane_name="lane_left",
+        lane_index=1,
+        lane_role="normal",
+        frame_index=10,
+        video_time_s=1.0,
+        schema_version="1.1",
+        session_id="live_20261108_082400",
+        window_index=0,
+        window_count=3,
+    )
+    validate(event.to_dict(), schema())

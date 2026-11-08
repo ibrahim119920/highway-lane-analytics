@@ -344,6 +344,9 @@ def _process_one(
     frame_stride: int | None,
     max_frames: int | None,
     write_video: bool | None,
+    session_id: str = "",
+    window_index: int | None = None,
+    window_count: int | None = None,
 ):
     from .pipeline import process_video
 
@@ -365,6 +368,9 @@ def _process_one(
         write_video=render_video,
         generate_reports=True,
         run_id=run_id,
+        session_id=session_id,
+        window_index=window_index,
+        window_count=window_count,
     )
 
 
@@ -394,6 +400,10 @@ def activate(
     retries: int = 5,
     dry_run: bool = False,
     skip_health_check: bool = False,
+    session_id: str | None = None,
+    window_index: int | None = None,
+    window_count: int | None = None,
+    run_id: str | None = None,
 ) -> ActivationResult:
     """Prepare footage, run the batch pipeline, and replay it to the webhook.
 
@@ -445,7 +455,9 @@ def activate(
     else:
         video, recorded_at = _record_live(stream_url, video_dir, record_seconds)
         videos = [video]
-        base_map = {video: recorded_at}
+        # A caller-provided base timestamp keeps live event-time on WIB even
+        # when the container clock is UTC.
+        base_map = {video: base_timestamp or recorded_at}
 
     if max_videos is not None:
         videos = videos[: max(0, int(max_videos))]
@@ -453,6 +465,14 @@ def activate(
         raise ActivationError("No video files were found for the selected source")
 
     run_ids = unique_run_ids(videos)
+    if run_id:
+        if len(videos) != 1:
+            raise ActivationError(
+                "run_id is only supported when exactly one video is processed"
+            )
+        from .pipeline import _safe_run_id
+
+        run_ids[videos[0]] = _safe_run_id(run_id)
     if replay and not webhook_url and not dry_run:
         raise ActivationError(
             "replay=True requires webhook_url (or the WEBHOOK_URL secret). "
@@ -466,20 +486,26 @@ def activate(
     print()
 
     for index, video in enumerate(videos, start=1):
-        run_id = run_ids[video]
+        effective_run_id = run_ids[video]
         base_ts = base_map.get(video) or (base_timestamp or "")
         item: dict[str, Any] = {
             "index": index,
             "video": str(video),
-            "run_id": run_id,
+            "run_id": effective_run_id,
             "base_timestamp": base_ts,
+            "session_id": session_id or "",
+            "window_index": window_index,
+            "window_count": window_count,
             "status": "pending",
         }
         try:
-            print(f"[{index}/{len(videos)}] {video.name} -> run_id={run_id}")
+            print(
+                f"[{index}/{len(videos)}] {video.name} -> run_id={effective_run_id}"
+                + (f" session={session_id} window={window_index}/{window_count}" if session_id else "")
+            )
             batch = _process_one(
                 video,
-                run_id=run_id,
+                run_id=effective_run_id,
                 base_timestamp=base_ts,
                 config_path=config_path,
                 device=device,
@@ -487,6 +513,9 @@ def activate(
                 frame_stride=frame_stride,
                 max_frames=max_frames,
                 write_video=write_video,
+                session_id=session_id or "",
+                window_index=window_index,
+                window_count=window_count,
             )
             item["vehicles"] = batch.total_vehicles
             item["events"] = batch.total_events
@@ -508,7 +537,7 @@ def activate(
                     else None,
                     url=webhook_url,
                     token=webhook_token,
-                    run_id=run_id,
+                    run_id=effective_run_id,
                     speed=speed,
                     window_seconds=window_seconds,
                     retries=retries,

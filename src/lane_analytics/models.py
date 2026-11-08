@@ -146,6 +146,9 @@ class LaneEvent:
     rule_name: str = ""
     message: str = ""
     schema_version: str = "1.0"
+    session_id: str = ""
+    window_index: int | None = None
+    window_count: int | None = None
     event_id: str = field(default_factory=lambda: uuid4().hex)
 
     def to_dict(self) -> dict[str, Any]:
@@ -171,6 +174,9 @@ class TrackSummary:
     hogging_event_count: int = 0
     dominant_lane: str = ""
     total_lane_dwell_seconds: float = 0.0
+    session_id: str = ""
+    window_index: int | None = None
+    window_count: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -188,6 +194,9 @@ class TrackSummary:
             "hogging_event_count": self.hogging_event_count,
             "dominant_lane": self.dominant_lane,
             "total_lane_dwell_seconds": self.total_lane_dwell_seconds,
+            "session_id": self.session_id,
+            "window_index": self.window_index,
+            "window_count": self.window_count,
             "lane_stints": [stint.to_dict() for stint in self.lane_stints],
         }
 

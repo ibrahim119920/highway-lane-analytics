@@ -316,3 +316,23 @@ def test_wide_box_stays_on_bottom_centre_when_shift_is_disabled():
     events = _push(tracker, (38.0, 68.0, 62.0, 88.0), 3)
     assert events == []
     assert tracker.snapshot()["tracks_seen"] == 1
+
+def test_session_window_fields_are_propagated():
+    tracker = make_tracker(session_id="sess_01", window_index=2, window_count=5)
+    update(tracker, 20.0, 1)
+    events = update(tracker, 20.0, 2)
+    assert events[0].session_id == "sess_01"
+    assert events[0].window_index == 2
+    assert events[0].window_count == 5
+    assert events[0].schema_version == "1.1"
+
+    tracker.finalize(
+        frame_index=3,
+        timestamp="2026-11-07T08:00:03",
+        video_time_s=0.3,
+    )
+    summary = tracker.track_summaries()[0]
+    assert summary.session_id == "sess_01"
+    assert summary.window_index == 2
+    assert summary.window_count == 5
+    assert summary.to_dict()["session_id"] == "sess_01"

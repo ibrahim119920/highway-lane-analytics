@@ -900,6 +900,9 @@ def process_video_parallel(
     generate_reports: bool = True,
     run_id: str | None = None,
     start_frame: int = 0,
+    session_id: str = "",
+    window_index: int | None = None,
+    window_count: int | None = None,
     workers: int = DEFAULT_WORKERS,
     segment_seconds: float = DEFAULT_SEGMENT_SECONDS,
     overlap_seconds: float = DEFAULT_OVERLAP_SECONDS,
@@ -970,6 +973,9 @@ def process_video_parallel(
         "generate_reports": generate_reports,
         "run_id": run_id,
         "start_frame": first_frame,
+        "session_id": session_id,
+        "window_index": window_index,
+        "window_count": window_count,
     }
     if int(workers) <= 1 or len(segments) <= 1:
         return _fallback(config, **single_pass_kwargs)
@@ -1170,6 +1176,9 @@ def process_video_parallel(
                 generate_reports=generate_reports,
                 run_id=run_id,
                 start_frame=first_frame,
+                session_id=session_id,
+                window_index=window_index,
+                window_count=window_count,
                 frame_limit=window_limit,
                 observation_source=source,
                 detector_label=f"{stitch_config.model.weights} + ByteTrack (parallel)",

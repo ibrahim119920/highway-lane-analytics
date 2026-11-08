@@ -389,3 +389,34 @@ def test_process_video_writes_frame_log_and_replays_it(tmp_path: Path):
     assert second.frames_processed == first.frames_processed
     assert second.total_events == first.total_events
     assert comparable(second.events) == comparable(first.events)
+
+def test_process_video_propagates_session_window_metadata(tmp_path: Path):
+    video = tmp_path / "clip.avi"
+    _write_test_clip(video)
+    config = _test_config(video, tmp_path / "out")
+
+    result = process_video(
+        config,
+        detector=_FakeDetector(),
+        video_path=video,
+        events_path=tmp_path / "events.jsonl",
+        tracks_path=tmp_path / "tracks.jsonl",
+        output_video=tmp_path / "session.avi",
+        write_video=False,
+        generate_reports=False,
+        run_id="sess_01_w0001",
+        session_id="sess_01",
+        window_index=1,
+        window_count=3,
+    )
+
+    assert result.session_id == "sess_01"
+    assert result.window_index == 1
+    assert result.window_count == 3
+    assert result.events
+    assert all(event.session_id == "sess_01" for event in result.events)
+    assert all(event.window_index == 1 for event in result.events)
+    assert all(event.schema_version == "1.1" for event in result.events)
+    assert result.tracks[0]["session_id"] == "sess_01"
+    assert result.tracks[0]["window_count"] == 3
+    assert result.summary["run"]["session_id"] == "sess_01"

@@ -61,12 +61,35 @@ same frame/timestamp.
 | `severity` | string | no | `low`, `medium`, `high`, or empty. Set for hogging indications. |
 | `rule_name` | string | no | Configured rule name. Set for hogging indications. |
 | `message` | string | no | Human-readable rule description. |
-| `schema_version` | string | no | Event contract version, currently `1.0`. |
+| `schema_version` | string | no | Event contract version: `1.0` (legacy) or `1.1` when session fields are present. |
+| `session_id` | string | no | Groups the 30-second windows of one live click or one long-video batch. Empty for legacy runs. |
+| `window_index` | integer or null | no | 0-based window number inside the session. |
+| `window_count` | integer or null | no | Total planned windows in the session. |
 | `event_id` | string | no | UUID4 hex, 32 characters. Use for downstream deduplication. |
 
 The first seven fields plus `lane_name` form the stable contract. New optional fields may
 be added in future versions; consumers should ignore unknown keys and check
 `schema_version` if strict.
+
+### Sessions and windows
+
+A **run** is one processed video file (`run_id`). A **session** is one user action: one
+live-stream click or one long-video batch. When a session is split into 30-second
+windows:
+
+```text
+session_id  = live_20261108_082400
+run_id      = live_20261108_082400_w0000   # window_index 0
+run_id      = live_20261108_082400_w0001   # window_index 1
+window_count = 3
+```
+
+- `run_id` is unique per window and remains the supersede key.
+- `session_id` is shared by all windows of the session.
+- `track_id` resets per window. Do not sum distinct `track_id` values across windows as
+  unique vehicles; label session totals as window-scoped.
+- Legacy `1.0` runs have no session fields; treat them as a one-window session if
+  grouping is needed (`session_id = run_id`, `window_index = 0`, `window_count = 1`).
 
 ### Semantics and caveats
 
@@ -100,6 +123,9 @@ be added in future versions; consumers should ignore unknown keys and check
   "hogging_event_count": 1,
   "dominant_lane": "lane_right",
   "total_lane_dwell_seconds": 9.1,
+  "session_id": "",
+  "window_index": null,
+  "window_count": null,
   "lane_stints": [
     {
       "stint_id": 1,
@@ -119,7 +145,8 @@ be added in future versions; consumers should ignore unknown keys and check
 ```
 
 `lane_stints` is the per-vehicle lane history. `dominant_lane` is the lane with the
-largest total dwell.
+largest total dwell. `session_id`, `window_index`, and `window_count` mirror the event
+fields and are empty/`null` for legacy runs.
 
 ## CSV exports
 
@@ -198,6 +225,10 @@ largest total dwell.
 | `intervals` | Event timeseries by bucket. |
 | `peak_interval` | Busiest interval, or `null`. |
 | `run` | Run metadata (source, detector, frame counts, FPS, lanes, rules). |
+
+For session-aware runs, `run.session_id`, `run.window_index`, and `run.window_count` are
+also present. A session groups multiple 30-second `run_id` windows; see
+[HANDOFF_SESSION_WINDOWS.md](./HANDOFF_SESSION_WINDOWS.md).
 
 ## Downstream pipeline expectations
 

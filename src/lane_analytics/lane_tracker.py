@@ -78,6 +78,9 @@ class LaneTracker:
         hogging_enabled: bool = True,
         hogging_rules: Sequence[HoggingRule] = (),
         retrigger_after_seconds: float = 0.0,
+        session_id: str = "",
+        window_index: int | None = None,
+        window_count: int | None = None,
     ) -> None:
         if not lanes:
             raise ValueError("At least one lane region is required")
@@ -102,6 +105,9 @@ class LaneTracker:
         self._hogging_enabled = bool(hogging_enabled) and bool(hogging_rules)
         self._rules = list(hogging_rules)
         self._retrigger_after = max(0.0, float(retrigger_after_seconds))
+        self._session_id = str(session_id or "")
+        self._window_index = window_index
+        self._window_count = window_count
 
         self._states: dict[int, _TrackState] = {}
         self._summaries: list[TrackSummary] = []
@@ -504,6 +510,9 @@ class LaneTracker:
             hogging_event_count=state.hogging_count,
             dominant_lane=dominant,
             total_lane_dwell_seconds=round(sum(dwell_by_lane.values()), 3),
+            session_id=self._session_id,
+            window_index=self._window_index,
+            window_count=self._window_count,
         )
 
     # ------------------------------------------------------------------ reading
@@ -585,4 +594,8 @@ class LaneTracker:
             severity=severity,
             rule_name=rule_name,
             message=message,
+            schema_version="1.1" if self._session_id else "1.0",
+            session_id=self._session_id,
+            window_index=self._window_index,
+            window_count=self._window_count,
         )

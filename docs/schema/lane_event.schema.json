@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.org/highway-lane-occupancy/lane_event.schema.json",
   "title": "Highway lane occupancy event",
-  "description": "One lane-occupancy, lane-change, or lane-hogging indication event. Schema version 1.0.",
+  "description": "One lane-occupancy, lane-change, or lane-hogging indication event. Schema version 1.1 adds optional session/window metadata; version 1.0 events remain valid.",
   "type": "object",
   "required": [
     "camera_id",
@@ -89,6 +89,20 @@
     "schema_version": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+$"
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Groups the 30-second windows of one live click or one long-video batch. Empty for legacy runs."
+    },
+    "window_index": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "0-based window number inside the session."
+    },
+    "window_count": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "Total planned windows in the session."
     },
     "event_id": {
       "type": "string",

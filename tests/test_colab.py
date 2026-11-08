@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -118,3 +119,48 @@ def test_activate_requires_drive_url(monkeypatch):
     monkeypatch.delenv("DRIVE_ZIP_URL", raising=False)
     with pytest.raises(ActivationError, match="drive_url"):
         activate(source="drive_zip")
+
+def test_activate_accepts_session_and_run_id(tmp_path: Path, monkeypatch):
+    archive = tmp_path / "videos.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("clip.mp4", "dummy")
+
+    captured: dict = {}
+
+    def fake_process_one(video, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            total_vehicles=3,
+            total_events=5,
+            hogging_events=1,
+            evidence_events=0,
+            evidence_snapshots=0,
+            evidence_clips=0,
+            evidence_dir=None,
+            events_path=str(tmp_path / "events.jsonl"),
+            tracks_path=str(tmp_path / "tracks.jsonl"),
+            reports_dir=None,
+        )
+
+    monkeypatch.setattr("lane_analytics.colab._process_one", fake_process_one)
+    result = activate(
+        source="drive_zip",
+        zip_path=archive,
+        video_dir=tmp_path / "raw",
+        replay=False,
+        session_id="sess_01",
+        window_index=2,
+        window_count=5,
+        run_id="sess_01_w0002",
+    )
+
+    assert result.processed == 1
+    item = result.videos[0]
+    assert item["run_id"] == "sess_01_w0002"
+    assert item["session_id"] == "sess_01"
+    assert item["window_index"] == 2
+    assert item["window_count"] == 5
+    assert captured["run_id"] == "sess_01_w0002"
+    assert captured["session_id"] == "sess_01"
+    assert captured["window_index"] == 2
+    assert captured["window_count"] == 5

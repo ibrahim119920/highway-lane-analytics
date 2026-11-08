@@ -60,6 +60,9 @@ class RunResult:
     id_handovers: int = 0
     wall_s: float = 0.0
     worker_devices: list[str] = field(default_factory=list)
+    session_id: str = ""
+    window_index: int | None = None
+    window_count: int | None = None
 
     @property
     def processing_fps(self) -> float:
@@ -97,6 +100,9 @@ def process_video(
     generate_reports: bool = True,
     run_id: str | None = None,
     start_frame: int = 0,
+    session_id: str = "",
+    window_index: int | None = None,
+    window_count: int | None = None,
     frame_log_path: str | Path | None = None,
     frame_limit: int | None = None,
     observation_source: Callable[[int], Sequence[TrackedObject]] | None = None,
@@ -210,6 +216,9 @@ def process_video(
         hogging_enabled=config.hogging.enabled,
         hogging_rules=rules,
         retrigger_after_seconds=config.hogging.retrigger_after_seconds,
+        session_id=session_id,
+        window_index=window_index,
+        window_count=window_count,
     )
     if detector_label:
         detector_name = detector_label
@@ -474,6 +483,10 @@ def process_video(
             evidence_result.as_dict() if evidence_result is not None else {"enabled": False}
         ),
     }
+    if session_id:
+        meta["session_id"] = session_id
+        meta["window_index"] = window_index
+        meta["window_count"] = window_count
     if frame_log_path:
         meta["frame_log"] = str(frame_log_path)
     if extra_meta:
@@ -542,4 +555,7 @@ def process_video(
         evidence_snapshots=evidence_result.snapshot_count if evidence_result else 0,
         evidence_clips=evidence_result.clip_count if evidence_result else 0,
         wall_s=processing_s,
+        session_id=session_id,
+        window_index=window_index,
+        window_count=window_count,
     )
