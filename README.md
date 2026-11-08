@@ -23,6 +23,8 @@ hogging counters. The demo runs without YOLO or PyTorch.*
 - **Vehicle detection & classification** with pretrained Ultralytics YOLO
   (`yolo11n.pt` by default), filtered to `car`, `bus`, and `truck`.
 - **Persistent tracking** with ByteTrack, exposed as run-scoped tracking IDs.
+- **Parallel segmented processing** for long clips: overlapping workers hand tracks over
+  with Hungarian assignment, so canonical IDs and lane events stay continuous across seams.
 - **Polygon lane mapping** in normalized coordinates, so one config works at any
   resolution.
 - **Lane occupancy analysis**: current lane, entry/exit time, dwell duration, and
@@ -183,6 +185,53 @@ lane-analytics doctor
 The first YOLO run downloads `yolo11n.pt` automatically. Use `--model yolov8n.pt` for a
 different checkpoint, or pass local weights.
 
+### Option D - parallel segmented processing (long clips)
+
+`analyze` can split a long clip into overlapping segments and process them in worker
+processes:
+
+```powershell
+lane-analytics analyze --video data/raw/tj_priok_5min.mp4 `
+  --workers 3 --segment-seconds 12 --overlap-seconds 3
+```
+
+Defaults are 12 s segments with 3 s overlap, so segment starts advance every 9 s (three
+segments per 30 s) and every seam shares 3 s of footage. Each worker runs a normal YOLO +
+ByteTrack pass over its segment and writes a frame log of tracked boxes.
+
+After the workers finish:
+
+1. Every frame index is already on the original video timeline, so boxes from adjacent
+   segments line up frame-for-frame.
+2. Tracks that survive the overlap are matched one-to-one with a Hungarian assignment.
+   A pair must clear a mean spatial IoU gate (default `0.7`) and a motion-heading
+   similarity gate; the cost combines both.
+3. A matched later-segment track inherits the earlier track's canonical ID, and the
+   mapping is chained through every segment. For example, segment 2 local ID 2 can keep
+   segment 1 ID 5.
+4. The merged observations are replayed once through a single global lane tracker, so
+   lane stints, dwell times, lane changes, and hogging indications are rebuilt without
+   duplicated events from the overlap.
+5. The annotated video and reports are written once from that global tracker, using the
+   canonical IDs.
+
+The handover table (every local ID plus each matched pair with its IoU and heading
+scores) is written to `output/tracks/<run_id>_id_handovers.jsonl`.
+
+Use `--workers 1` to force a single pass. Parallelism is most useful when one YOLO
+process cannot saturate the machine, for example a many-core CPU server or multiple
+GPUs. On a 6-core laptop CPU a single pass already uses every physical core; segments
+then split the same compute, add overlap work, and may be slower. On a single GPU all
+workers share the same device, so keep `--workers 1` there.
+
+Measured on this repository's 6-core i5-11400H, 1200-frame window (YOLO11n, CPU,
+`imgsz: 960`): single pass 114 s, three workers 161-165 s. Both produced the same 81
+track summaries and 84 events (38 enters, 38 exits, 2 lane changes, 6 hogging), which
+confirms the handover/merge logic; the slower wall time is the CPU already being
+saturated plus 33% overlap work. On the 90-frame acceptance clip, five 1-second
+segments keep the car on canonical ID 1 across four seams and still emit `lane_enter`
+at frame 36 / 2.016 s with a 2.968 s dwell, exactly matching the single-pass run.
+
 ## Configuration
 
 All runtime settings live in [`config/config.yaml`](config/config.yaml). Coordinates are
@@ -340,6 +389,7 @@ output/
   videos/<run_id>_annotated.mp4
   events/<run_id>.jsonl
   tracks/<run_id>.jsonl
+  tracks/<run_id>_id_handovers.jsonl   # parallel runs: local -> canonical ID map
   reports/<run_id>/
     events.csv
     vehicles.csv
@@ -512,6 +562,7 @@ highway-lane-occupancy/
 │   ├── annotator.py            # OpenCV rendering
 │   ├── analytics.py            # Pandas summaries and reports
 │   ├── pipeline.py             # orchestration
+│   ├── parallel.py             # segmented workers, ID handover, replay merge
 │   ├── evidence.py             # snapshots + short clips per event
 │   ├── demo.py                 # synthetic scene + manifest backend
 │   ├── recorder.py             # live HLS/HTTP recorder
@@ -541,6 +592,10 @@ highway-lane-occupancy/
 8. **Finalize** open stints at the last observation (or when a track becomes stale), write
    per-track summaries, and build CSV/JSON/Markdown reports with Pandas.
 
+With `--workers > 1`, steps 2-8 run per segment in worker processes. A final merge matches
+overlapping tracks by IoU and motion heading, maps every segment-local ID to a canonical
+ID, and replays the merged boxes through one global tracker before rendering and reporting.
+
 Detailed notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Testing
@@ -552,7 +607,8 @@ pytest
 
 The suite covers point-in-polygon geometry, overlap resolution, config validation, lane
 entry/exit/change, flicker suppression, hogging thresholds, retriggering, schema
-validation, and an end-to-end synthetic demo run.
+validation, an end-to-end synthetic demo run, segment planning, Hungarian assignment,
+IoU/motion gating, canonical ID chaining, overlap deduplication, and frame-log replay.
 
 ## Limitations
 
@@ -571,6 +627,11 @@ validation, and an end-to-end synthetic demo run.
   speed or actual overtaking behaviour.
 - ByteTrack can switch IDs after long occlusions, which may split one vehicle into
   multiple track summaries.
+- Parallel segmentation cannot exceed the machine's total CPU throughput. A single YOLO
+  process already uses all physical cores by default; overlapping segments add work, so
+  the parallel path is aimed at many-core servers and multi-GPU hosts, not small laptops.
+- A handover is rejected when mean IoU or motion heading disagree; a vehicle that changes
+  appearance or pauses exactly on a seam can still receive a new canonical ID.
 - Rule thresholds are heuristic and must be reviewed against the road's actual rules.
 - Accuracy and throughput depend on the YOLO checkpoint, resolution, frame stride, and
   footage quality.

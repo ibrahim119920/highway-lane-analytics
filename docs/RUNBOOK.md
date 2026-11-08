@@ -157,6 +157,31 @@ lane-analytics doctor
 lane-analytics analyze --video data/raw/traffic.mp4 --frame-stride 3 --imgsz 480
 ```
 
+### Parallel segmented run
+
+For long clips, split the work into overlapping segments:
+
+```powershell
+lane-analytics analyze --video data/raw/tj_priok_5min.mp4 `
+  --workers 3 --segment-seconds 12 --overlap-seconds 3
+```
+
+Defaults are three workers, 12 s segments, and a 3 s overlap (starts every 9 s). The
+final IDs, events, and reports are continuous; the local-to-canonical map is in
+`output/tracks/<run_id>_id_handovers.jsonl`.
+
+Use `--workers 1` when a single YOLO pass already saturates the CPU, or on a single GPU.
+Check the log line `Parallel: N segments finished in ... (... of segment work)`: if
+segment work is much larger than the sequential run and wall time is worse, the machine
+has no spare compute for parallelism.
+
+Compare a small window before committing:
+
+```powershell
+lane-analytics analyze --max-frames 1200 --workers 1 --no-video --no-evidence
+lane-analytics analyze --max-frames 1200 --workers 3 --no-video --no-evidence
+```
+
 ## Offline demo
 
 No YOLO or PyTorch required:

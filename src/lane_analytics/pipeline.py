@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Sequence
 
 import cv2
 
@@ -19,7 +19,7 @@ from .detector import Detector, YoloByteTrackDetector
 from .geometry import LaneRegion
 from .hogging import build_rules
 from .lane_tracker import LaneTracker
-from .models import LaneEvent
+from .models import LaneEvent, TrackedObject
 from .utils import ensure_dir, human_duration, parse_timestamp, timestamp_for_frame
 
 log = logging.getLogger(__name__)
@@ -53,6 +53,12 @@ class RunResult:
     evidence_events: int = 0
     evidence_snapshots: int = 0
     evidence_clips: int = 0
+    segments: int = 1
+    workers: int = 1
+    segment_seconds: float = 0.0
+    overlap_seconds: float = 0.0
+    id_handovers: int = 0
+    wall_s: float = 0.0
 
     @property
     def processing_fps(self) -> float:
@@ -90,12 +96,23 @@ def process_video(
     generate_reports: bool = True,
     run_id: str | None = None,
     start_frame: int = 0,
+    frame_log_path: str | Path | None = None,
+    frame_limit: int | None = None,
+    observation_source: Callable[[int], Sequence[TrackedObject]] | None = None,
+    detector_label: str | None = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> RunResult:
     """Run detection, tracking, lane analysis, annotation, and reporting.
 
     ``start_frame`` seeks into the source before decoding, so a long clip can be
     processed in windows without re-decoding from the beginning. Timestamps still
     refer to the original video timeline.
+
+    ``frame_log_path`` writes one JSON line per processed frame with the raw
+    tracked objects, which the parallel segmenter uses to hand tracks over at
+    segment boundaries. ``observation_source`` replays those precomputed objects
+    instead of running the detector, letting the parallel orchestrator rebuild a
+    single globally consistent track timeline.
     """
     config.validate()
 
@@ -126,7 +143,7 @@ def process_video(
         Path(reports_setting) if reports_setting else output_root / "reports" / run_id
     )
 
-    if detector is None:
+    if detector is None and observation_source is None:
         log.info("Loading detector: %s", config.model.weights)
         detector = YoloByteTrackDetector(
             weights=config.model.weights,
@@ -157,7 +174,7 @@ def process_video(
     stride = max(1, int(config.video.frame_stride))
     output_fps = float(config.video.output_fps) if config.video.output_fps else source_fps / stride
     output_fps = max(output_fps, 1.0)
-    max_frames = config.video.max_frames
+    max_frames = frame_limit if frame_limit is not None else config.video.max_frames
     first_frame = max(0, int(start_frame))
     if total_frames > 0:
         first_frame = min(first_frame, max(0, total_frames - 1))
@@ -193,7 +210,12 @@ def process_video(
         hogging_rules=rules,
         retrigger_after_seconds=config.hogging.retrigger_after_seconds,
     )
-    detector_name = getattr(detector, "name", detector.__class__.__name__)
+    if detector_label:
+        detector_name = detector_label
+    elif detector is not None:
+        detector_name = getattr(detector, "name", detector.__class__.__name__)
+    else:
+        detector_name = "precomputed-observations"
     backend_label = (
         "YOLO + ByteTrack"
         if "yolo" in detector_name.lower()
@@ -215,6 +237,12 @@ def process_video(
                 f"OpenCV could not create a video writer for {output_video_path}. "
                 "Try an .avi output path or reinstall opencv-python with FFmpeg support."
             )
+
+    frame_log_handle = None
+    if frame_log_path:
+        frame_log_file = Path(frame_log_path)
+        ensure_dir(frame_log_file.parent)
+        frame_log_handle = frame_log_file.open("w", encoding="utf-8")
 
     log.info(
         "Source: %s (%dx%d @ %.2f fps, %s frames)",
@@ -278,7 +306,10 @@ def process_video(
                     log.warning("Failed to decode frame %d; stopping", frame_index)
                     break
 
-                objects = detector.update(frame, frame_index)
+                if observation_source is not None:
+                    objects = list(observation_source(frame_index))
+                else:
+                    objects = detector.update(frame, frame_index)
                 timestamp = timestamp_for_frame(base_timestamp, frame_index, source_fps)
                 video_time_s = frame_index / source_fps
                 events = tracker.update(
@@ -288,6 +319,29 @@ def process_video(
                     video_time_s=video_time_s,
                 )
                 emit(events, event_handle)
+
+                if frame_log_handle is not None:
+                    frame_log_handle.write(
+                        json.dumps(
+                            {
+                                "frame_index": frame_index,
+                                "timestamp": timestamp,
+                                "video_time_s": round(video_time_s, 6),
+                                "objects": [
+                                    {
+                                        "track_id": int(obj.track_id),
+                                        "class_id": int(obj.class_id),
+                                        "class_name": str(obj.class_name),
+                                        "confidence": round(float(obj.confidence), 6),
+                                        "bbox": [round(float(value), 3) for value in obj.bbox],
+                                    }
+                                    for obj in objects
+                                ],
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
 
                 frames_processed += 1
                 last_processed_frame = frame_index
@@ -335,6 +389,11 @@ def process_video(
         capture.release()
         if writer is not None:
             writer.release()
+        if frame_log_handle is not None:
+            frame_log_handle.close()
+        close_source = getattr(observation_source, "close", None)
+        if callable(close_source):
+            close_source()
 
     processing_s = time.perf_counter() - started
     frames_in_run = max(0, frames_read - first_frame)
@@ -414,6 +473,10 @@ def process_video(
             evidence_result.as_dict() if evidence_result is not None else {"enabled": False}
         ),
     }
+    if frame_log_path:
+        meta["frame_log"] = str(frame_log_path)
+    if extra_meta:
+        meta.update(extra_meta)
     summary = summarize_events(
         event_records,
         track_records,
@@ -477,4 +540,5 @@ def process_video(
         evidence_events=evidence_result.event_count if evidence_result else 0,
         evidence_snapshots=evidence_result.snapshot_count if evidence_result else 0,
         evidence_clips=evidence_result.clip_count if evidence_result else 0,
+        wall_s=processing_s,
     )

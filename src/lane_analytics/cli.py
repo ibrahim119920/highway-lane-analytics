@@ -49,6 +49,24 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--conf", type=float, help="detection confidence threshold")
     analyze.add_argument("--no-video", action="store_true", help="skip annotated video rendering")
     analyze.add_argument("--no-reports", action="store_true", help="skip CSV/JSON/Markdown reports")
+    analyze.add_argument(
+        "--workers",
+        type=int,
+        default=3,
+        help="parallel segment workers (default: 3; use 1 for a single pass)",
+    )
+    analyze.add_argument(
+        "--segment-seconds",
+        type=float,
+        default=12.0,
+        help="length of each parallel segment in seconds (default: 12)",
+    )
+    analyze.add_argument(
+        "--overlap-seconds",
+        type=float,
+        default=3.0,
+        help="shared footage between adjacent segments in seconds (default: 3)",
+    )
     evidence_group = analyze.add_mutually_exclusive_group()
     evidence_group.add_argument(
         "--evidence", dest="evidence", action="store_true",
@@ -221,6 +239,12 @@ def _print_run_summary(result: "RunResult") -> None:
     print(f"By type      : {format_counts(summary.get('events_by_type') or {})}")
     print(f"Lane changes : {int((summary.get('lane_changes') or {}).get('total') or 0)}")
     print(f"Hogging      : {result.hogging_events} indication(s)")
+    if result.segments > 1:
+        print(
+            f"Segments     : {result.segments} x {result.segment_seconds:.1f}s "
+            f"({result.overlap_seconds:.1f}s overlap, {result.workers} workers)"
+        )
+        print(f"ID handovers : {result.id_handovers} track(s) matched across seams")
     by_severity = (summary.get("hogging") or {}).get("by_severity") or {}
     if by_severity:
         print(f"Severity     : {format_counts(by_severity)}")
@@ -562,24 +586,35 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "analyze":
-            from .pipeline import process_video
-
             config = load_config(args.config)
             config = _apply_overrides(config, args)
             print(f"Using config: {Path(args.config)}")
             print(describe_config(config))
             print()
-            result = process_video(
-                config,
-                output_video=args.output_video,
-                events_path=args.events,
-                tracks_path=args.tracks,
-                reports_dir=args.reports_dir,
-                write_video=not args.no_video,
-                generate_reports=not args.no_reports,
-                run_id=args.run_id,
-                start_frame=args.start_frame or 0,
-            )
+            run_kwargs = {
+                "output_video": args.output_video,
+                "events_path": args.events,
+                "tracks_path": args.tracks,
+                "reports_dir": args.reports_dir,
+                "write_video": not args.no_video,
+                "generate_reports": not args.no_reports,
+                "run_id": args.run_id,
+                "start_frame": args.start_frame or 0,
+            }
+            if args.workers > 1:
+                from .parallel import process_video_parallel
+
+                result = process_video_parallel(
+                    config,
+                    workers=args.workers,
+                    segment_seconds=args.segment_seconds,
+                    overlap_seconds=args.overlap_seconds,
+                    **run_kwargs,
+                )
+            else:
+                from .pipeline import process_video
+
+                result = process_video(config, **run_kwargs)
             _print_run_summary(result)
             return 0
 

@@ -54,6 +54,21 @@ class YoloByteTrackDetector:
         self._names = getattr(self._model, "names", {})
         self.name = f"yolo+bytetrack:{weights}"
 
+    def reset(self) -> None:
+        """Drop the ByteTrack state so the model can be reused for a new segment.
+
+        The YOLO weights are expensive to load but the tracker is not; parallel
+        segment workers keep one model alive per process and reset only the
+        tracker between segments.
+        """
+        predictor = getattr(self._model, "predictor", None)
+        if predictor is None:
+            return
+        try:
+            predictor.trackers = []
+        except Exception:  # pragma: no cover - defensive against API changes
+            pass
+
     def _class_name(self, class_id: int) -> str:
         if isinstance(self._names, dict):
             return str(self._names.get(class_id, class_id))

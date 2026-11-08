@@ -167,6 +167,53 @@ written to `output/evidence/<run_id>/index.json`. For runs started with `--start
 event's source time is converted to the annotated video's local time using
 `start_frame / source_fps`.
 
+### 10. Parallel segmented processing
+
+For long clips, `parallel.py` splits the source into overlapping half-open windows and
+runs each one through the normal `process_video` loop in a worker process:
+
+```text
+segment k   [ start_k , start_k + segment_frames )
+start_{k+1} = start_k + segment_frames - overlap_frames
+```
+
+The defaults are 12 s segments and a 3 s overlap, so starts advance every 9 s and a 30 s
+block contains three segments. Worker loggers write one JSON line per processed frame
+with the global `frame_index` and every tracked box. Timestamps and `video_time_s` stay
+on the original video timeline, so adjacent segments can be compared frame-for-frame.
+
+Handover runs after all workers finish, in segment order:
+
+1. Build per-track observation lists from the overlap window
+   `[start_k, min(end_{k-1}, end_k))`.
+2. For every earlier/later track pair, require at least one common frame, a mean bbox IoU
+   of at least `min_iou` (default 0.7), and a motion-heading cosine of at least
+   `min_motion_similarity` (default 0). Heading comes from the first-to-last centre
+   displacement inside the overlap; a static vehicle is treated as matching any heading.
+3. Feed the allowed pairs to a pure-Python Hungarian assignment. The cost matrix pads
+   unmatched rows/columns with a cost of 1.0, so a pair is accepted only when its
+   combined IoU/heading score beats leaving both tracks unmatched.
+4. Resolve the earlier local ID through the previous segment's mapping, so canonical IDs
+   chain across every seam. Unmatched later tracks get the next fresh canonical ID.
+
+The frame logs are merged incrementally. Frames are flushed only once no later segment
+can observe them; when both sides of a seam contain the same frame, the higher-confidence
+box wins. The merged log is then replayed through one global `LaneTracker` via
+`process_video(observation_source=...)`, which rebuilds stints, dwell, lane changes, and
+hogging events without duplicates. The annotated video, evidence, and reports are written
+once from that global pass, using canonical IDs.
+
+Each worker process keeps its YOLO model alive and calls `reset()` on the ByteTrack
+adapter between segments, so weights load once per worker instead of once per segment.
+Thread count is split across workers (`physical cores // workers`): on an SMT CPU the
+single-pass pipeline already uses every physical core, so overlapping segments split the
+same compute and can be slower. Parallel mode targets many-core CPU hosts and multi-GPU
+machines; a single GPU should use `--workers 1`.
+
+The full local-to-canonical table is written to
+`output/tracks/<run_id>_id_handovers.jsonl`, together with every accepted handover and
+its IoU/heading scores.
+
 ## Module map
 
 | Module | Responsibility |
@@ -179,6 +226,7 @@ event's source time is converted to the annotated video's local time using
 | `annotator.py` | Lane polygons, boxes, labels, HUD. |
 | `analytics.py` | Event/track aggregation and report writing. |
 | `pipeline.py` | Frame loop and artifact orchestration. |
+| `parallel.py` | Segment planner, worker pool, IoU/heading handover, canonical IDs, merged replay. |
 | `evidence.py` | Snapshot + 8-second clip evidence per event. |
 | `demo.py` | Synthetic scene and manifest detector. |
 | `recorder.py` | Chunked HLS/HTTP recording with ffmpeg. |
@@ -209,3 +257,6 @@ event's source time is converted to the annotated video's local time using
 | Short dwell durations | Track ID switched or vehicle occluded | Improve detection size/confidence, review footage. |
 | First box ~0.5-1 s late on a fast near-field vehicle | `frame_stride > 1`; ByteTrack matches unconfirmed tracks against their last position and can miss across large motion | Keep `frame_stride: 1`, or lower it for latency-sensitive runs. |
 | Slow CPU run | Full-resolution YOLO on every frame | Use stride 2-3, `imgsz: 480`, `--no-video`. |
+| Parallel mode slower than single pass | One pass already saturates physical cores; overlap adds work | Use `--workers 1` on small CPUs; keep workers for many-core hosts. |
+| ID changes at a seam | Mean IoU or heading gate rejected the handover | Increase `overlap_seconds`, keep `frame_stride: 1`, or lower the IoU gate in code. |
+| Duplicate events in parallel output | Should not happen; events are rebuilt from the merged log | Check `output/tracks/<run_id>_id_handovers.jsonl` and the merged frame count in `summary.json`. |
