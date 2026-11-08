@@ -27,10 +27,13 @@ from lane_analytics.parallel import (
     bbox_iou,
     build_local_tracks,
     hungarian_assignment,
+    is_gpu_device,
     match_overlap_tracks,
     merge_segment_frame_logs,
     plan_segments,
     read_frame_log,
+    resolve_worker_devices,
+    worker_pool_context,
 )
 from lane_analytics.pipeline import process_video
 
@@ -100,6 +103,49 @@ def test_plan_segments_honours_window():
 def test_plan_segments_rejects_bad_overlap():
     with pytest.raises(ValueError):
         plan_segments(100, 30.0, segment_seconds=3.0, overlap_seconds=3.0)
+
+
+def test_resolve_worker_devices_two_gpus():
+    slots, workers = resolve_worker_devices(
+        "0", workers=3, devices=["0", "1"], segment_count=10
+    )
+    assert slots == ["0", "1"]
+    assert workers == 2
+
+
+def test_resolve_worker_devices_collapses_duplicates():
+    slots, workers = resolve_worker_devices(
+        "cpu", workers=4, devices=["0", "0", "1"], segment_count=10
+    )
+    assert slots == ["0", "1"]
+    assert workers == 2
+
+
+def test_resolve_worker_devices_clamps_to_segments():
+    slots, workers = resolve_worker_devices(
+        "cpu", workers=8, devices=None, segment_count=3
+    )
+    assert slots == ["cpu", "cpu", "cpu"]
+    assert workers == 3
+
+
+def test_resolve_worker_devices_rejects_empty_list():
+    with pytest.raises(ValueError):
+        resolve_worker_devices("cpu", workers=2, devices=[], segment_count=10)
+
+
+def test_is_gpu_device():
+    assert not is_gpu_device("cpu")
+    assert not is_gpu_device("")
+    assert is_gpu_device("0")
+    assert is_gpu_device("cuda:1")
+
+
+def test_gpu_workers_use_spawn_context():
+    assert worker_pool_context(["cpu"]) is None
+    context = worker_pool_context(["0", "1"])
+    assert context is not None
+    assert context.get_start_method() == "spawn"
 
 
 # ---------------------------------------------------------------------- geometry

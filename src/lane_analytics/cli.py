@@ -52,8 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--workers",
         type=int,
-        default=3,
-        help="parallel segment workers (default: 3; use 1 for a single pass)",
+        default=1,
+        help="parallel segment workers (default: 1 = single pass; use >1 to opt in)",
     )
     analyze.add_argument(
         "--segment-seconds",
@@ -66,6 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=3.0,
         help="shared footage between adjacent segments in seconds (default: 3)",
+    )
+    analyze.add_argument(
+        "--devices",
+        help="comma-separated device ids for parallel workers, e.g. 0,1 on two GPUs",
     )
     evidence_group = analyze.add_mutually_exclusive_group()
     evidence_group.add_argument(
@@ -245,6 +249,8 @@ def _print_run_summary(result: "RunResult") -> None:
             f"({result.overlap_seconds:.1f}s overlap, {result.workers} workers)"
         )
         print(f"ID handovers : {result.id_handovers} track(s) matched across seams")
+        if result.worker_devices:
+            print(f"Devices      : {', '.join(result.worker_devices)}")
     by_severity = (summary.get("hogging") or {}).get("by_severity") or {}
     if by_severity:
         print(f"Severity     : {format_counts(by_severity)}")
@@ -604,11 +610,17 @@ def main(argv: list[str] | None = None) -> int:
             if args.workers > 1:
                 from .parallel import process_video_parallel
 
+                devices = (
+                    [part.strip() for part in args.devices.split(",") if part.strip()]
+                    if args.devices
+                    else None
+                )
                 result = process_video_parallel(
                     config,
                     workers=args.workers,
                     segment_seconds=args.segment_seconds,
                     overlap_seconds=args.overlap_seconds,
+                    devices=devices,
                     **run_kwargs,
                 )
             else:

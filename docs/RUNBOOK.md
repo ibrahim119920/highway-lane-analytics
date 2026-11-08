@@ -157,9 +157,10 @@ lane-analytics doctor
 lane-analytics analyze --video data/raw/traffic.mp4 --frame-stride 3 --imgsz 480
 ```
 
-### Parallel segmented run
+### Optional parallel segmented run
 
-For long clips, split the work into overlapping segments:
+`analyze` is single-pass by default (`--workers 1`). To opt into segmented workers for a
+long clip:
 
 ```powershell
 lane-analytics analyze --video data/raw/tj_priok_5min.mp4 `
@@ -174,6 +175,16 @@ Use `--workers 1` when a single YOLO pass already saturates the CPU, or on a sin
 Check the log line `Parallel: N segments finished in ... (... of segment work)`: if
 segment work is much larger than the sequential run and wall time is worse, the machine
 has no spare compute for parallelism.
+
+On a multi-GPU host (for example Kaggle `GPU T4 x2`), pin one worker to each device:
+
+```powershell
+lane-analytics analyze --video data/raw/tj_priok_5min.mp4 `
+  --workers 2 --devices 0,1
+```
+
+Each worker loads its own model on its own GPU; the final merge, annotated video, and
+reports still run once. Do not pass the same device twice.
 
 Compare a small window before committing:
 

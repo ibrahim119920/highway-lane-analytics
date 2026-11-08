@@ -20,6 +20,7 @@ import copy
 import json
 import logging
 import math
+import multiprocessing as mp
 import os
 import shutil
 import tempfile
@@ -57,6 +58,54 @@ _FORBIDDEN_COST = 1_000_000.0
 _WORKER_DETECTOR: Any = None
 _WORKER_DETECTOR_KEY: tuple[Any, ...] | None = None
 _WORKER_THREADS: int | None = None
+_WORKER_DEVICE: str | None = None
+
+
+def _is_cpu_device(device: str | None) -> bool:
+    return str(device or "").strip().lower() in {"", "cpu", "-1"}
+
+
+def is_gpu_device(device: str | None) -> bool:
+    """True for a CUDA device id such as ``"0"`` or ``"cuda:1"``."""
+    return not _is_cpu_device(device)
+
+
+def worker_pool_context(devices: Sequence[str]):
+    """Spawn GPU workers so they never inherit a forked CUDA context.
+
+    On Linux the default start method is ``fork``. CUDA cannot be re-initialized
+    safely in a forked child, so GPU workers must use ``spawn`` (the default on
+    Windows and macOS). CPU workers can keep the platform default.
+    """
+    if any(is_gpu_device(device) for device in devices):
+        return mp.get_context("spawn")
+    return None
+
+
+def resolve_worker_devices(
+    config_device: str,
+    *,
+    workers: int,
+    devices: Sequence[str] | None,
+    segment_count: int,
+) -> tuple[list[str], int]:
+    """Return one device slot per worker and the effective worker count.
+
+    ``devices`` wins over ``config_device`` when supplied. Duplicate entries are
+    collapsed so two workers never share one GPU by accident; the worker count
+    is clamped by the number of devices and the number of segments.
+    """
+    if segment_count <= 0:
+        return [], 0
+    if devices is not None:
+        requested = [str(item).strip() for item in devices if str(item).strip()]
+        if not requested:
+            raise ValueError("devices must contain at least one device id")
+        unique = list(dict.fromkeys(requested))
+        effective = max(1, min(int(workers), len(unique), int(segment_count)))
+        return unique[:effective], effective
+    effective = max(1, min(int(workers), int(segment_count)))
+    return [str(config_device)] * effective, effective
 
 
 @dataclass(frozen=True)
@@ -735,9 +784,10 @@ def _worker_detector(config: AppConfig):
     global _WORKER_DETECTOR, _WORKER_DETECTOR_KEY
 
     model = config.model
+    device = _WORKER_DEVICE or model.device
     key = (
         model.weights,
-        model.device,
+        str(device),
         int(model.imgsz),
         float(model.conf),
         float(model.iou),
@@ -749,7 +799,7 @@ def _worker_detector(config: AppConfig):
 
         _WORKER_DETECTOR = YoloByteTrackDetector(
             weights=model.weights,
-            device=model.device,
+            device=str(device),
             imgsz=model.imgsz,
             conf=model.conf,
             iou=model.iou,
@@ -766,10 +816,12 @@ def _worker_detector(config: AppConfig):
 
 def _segment_worker(payload: dict[str, Any]) -> dict[str, Any]:
     """Process one segment in a worker process."""
+    global _WORKER_DEVICE, _WORKER_THREADS
+
+    _WORKER_DEVICE = str(payload.get("device") or "")
     threads = max(1, int(payload.get("threads") or 1))
     for variable in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         os.environ.setdefault(variable, str(threads))
-    global _WORKER_THREADS
     if _WORKER_THREADS != threads:
         try:
             import torch  # noqa: PLC0415 - optional, only when a real detector runs
@@ -851,10 +903,15 @@ def process_video_parallel(
     workers: int = DEFAULT_WORKERS,
     segment_seconds: float = DEFAULT_SEGMENT_SECONDS,
     overlap_seconds: float = DEFAULT_OVERLAP_SECONDS,
+    devices: Sequence[str] | None = None,
     min_iou: float = DEFAULT_MIN_IOU,
     min_motion_similarity: float = DEFAULT_MIN_MOTION_SIMILARITY,
 ) -> RunResult:
-    """Process a video in overlapping parallel segments and stitch the result."""
+    """Process a video in overlapping parallel segments and stitch the result.
+
+    ``devices`` pins one worker process to each entry, e.g. ``["0", "1"]`` for
+    two T4 GPUs. Without it every worker uses ``config.model.device``.
+    """
     _validate_settings(
         segment_seconds=segment_seconds,
         overlap_seconds=overlap_seconds,
@@ -917,23 +974,30 @@ def process_video_parallel(
     if int(workers) <= 1 or len(segments) <= 1:
         return _fallback(config, **single_pass_kwargs)
 
-    effective_workers = max(1, min(int(workers), len(segments)))
-
-    if str(config.model.device).strip().lower() not in {"", "cpu", "-1"}:
+    worker_devices, effective_workers = resolve_worker_devices(
+        str(config.model.device),
+        workers=workers,
+        devices=devices,
+        segment_count=len(segments),
+    )
+    device_slots = list(dict.fromkeys(worker_devices))
+    gpu_devices = [device for device in worker_devices if is_gpu_device(device)]
+    if gpu_devices and devices is None and effective_workers > 1:
         log.warning(
-            "Parallel workers all use device %r; GPU memory and compute are shared, "
-            "so throughput may not improve. Use --workers 1 for GPU runs.",
+            "Parallel workers all use device %r; pass devices=['0','1'] to pin one "
+            "worker per GPU.",
             config.model.device,
         )
 
     started = time.perf_counter()
     work_root = Path(tempfile.mkdtemp(prefix=f"lane_parallel_{run_id}_"))
     log.info(
-        "Parallel: %d segment(s) of %.1fs with %.1fs overlap across %d worker(s)",
+        "Parallel: %d segment(s) of %.1fs with %.1fs overlap across %d worker(s) [%s]",
         len(segments),
         float(segment_seconds),
         float(overlap_seconds),
         effective_workers,
+        ", ".join(device_slots),
     )
 
     try:
@@ -951,8 +1015,12 @@ def process_video_parallel(
         # split them evenly; oversubscribing makes every worker slower.
         physical_cores = max(1, (os.cpu_count() or 2) // 2)
         threads = max(1, physical_cores // max(1, effective_workers))
+        if gpu_devices:
+            # GPU inference is fast; the CPU side (decode, preprocess, tracker)
+            # needs enough threads to keep each device fed.
+            threads = max(2, threads)
         payloads: list[dict[str, Any]] = []
-        for segment in segments:
+        for position, segment in enumerate(segments):
             payloads.append(
                 {
                     "index": segment.index,
@@ -965,13 +1033,43 @@ def process_video_parallel(
                     "frame_log_path": str(work_root / f"seg_{segment.index:04d}_frames.jsonl"),
                     "run_id": f"{run_id}_seg{segment.index:04d}",
                     "threads": threads,
+                    "device": device_slots[position % len(device_slots)],
                 }
             )
 
         segment_results: list[dict[str, Any]] = []
-        with ProcessPoolExecutor(max_workers=effective_workers) as executor:
-            futures = [executor.submit(_segment_worker, payload) for payload in payloads]
-            for future, payload in zip(futures, payloads):
+        executors: list[ProcessPoolExecutor] = []
+        pool_context = worker_pool_context(device_slots)
+        try:
+            if len(device_slots) > 1:
+                # One process per device; each task carries its device id.
+                for _device in device_slots:
+                    executors.append(
+                        ProcessPoolExecutor(
+                            max_workers=1,
+                            mp_context=pool_context,
+                        )
+                    )
+                submitted = [
+                    (
+                        executors[position % len(executors)].submit(
+                            _segment_worker, payload
+                        ),
+                        payload,
+                    )
+                    for position, payload in enumerate(payloads)
+                ]
+            else:
+                executor = ProcessPoolExecutor(
+                    max_workers=effective_workers,
+                    mp_context=pool_context,
+                )
+                executors.append(executor)
+                submitted = [
+                    (executor.submit(_segment_worker, payload), payload)
+                    for payload in payloads
+                ]
+            for future, payload in submitted:
                 try:
                     segment_results.append(future.result())
                 except Exception as exc:
@@ -979,6 +1077,9 @@ def process_video_parallel(
                         f"Segment {payload['index']} "
                         f"(frames {payload['start_frame']}-{payload['end_frame']}) failed: {exc}"
                     ) from exc
+        finally:
+            for executor in executors:
+                executor.shutdown(wait=True, cancel_futures=True)
         segment_results.sort(key=lambda item: item["index"])
 
         for item in segment_results:
@@ -1055,6 +1156,7 @@ def process_video_parallel(
             "overlap_seconds": float(overlap_seconds),
             "id_handovers": len(handovers),
             "id_map": str(id_table),
+            "devices": list(device_slots),
         }
         try:
             result = process_video(
@@ -1084,6 +1186,7 @@ def process_video_parallel(
         result.id_handovers = len(handovers)
         result.wall_s = wall_s
         result.processing_s = wall_s
+        result.worker_devices = list(device_slots)
         run_meta = result.summary.setdefault("run", {})
         run_meta["parallel"] = True
         run_meta["segments"] = len(segments)
@@ -1092,6 +1195,7 @@ def process_video_parallel(
         run_meta["overlap_seconds"] = float(overlap_seconds)
         run_meta["id_handovers"] = len(handovers)
         run_meta["id_map"] = str(id_table)
+        run_meta["devices"] = list(device_slots)
         run_meta["frames_in_merged_log"] = merged_frames
         run_meta["processing_seconds"] = round(wall_s, 3)
         run_meta["processing_fps"] = (

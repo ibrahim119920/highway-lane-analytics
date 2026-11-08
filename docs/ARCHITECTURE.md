@@ -167,10 +167,11 @@ written to `output/evidence/<run_id>/index.json`. For runs started with `--start
 event's source time is converted to the annotated video's local time using
 `start_frame / source_fps`.
 
-### 10. Parallel segmented processing
+### 10. Optional parallel segmented processing
 
-For long clips, `parallel.py` splits the source into overlapping half-open windows and
-runs each one through the normal `process_video` loop in a worker process:
+The default path is a single `process_video` pass (`--workers 1`). For long clips,
+`parallel.py` can optionally split the source into overlapping half-open windows and run
+each one through the normal `process_video` loop in a worker process:
 
 ```text
 segment k   [ start_k , start_k + segment_frames )
@@ -209,6 +210,13 @@ Thread count is split across workers (`physical cores // workers`): on an SMT CP
 single-pass pipeline already uses every physical core, so overlapping segments split the
 same compute and can be slower. Parallel mode targets many-core CPU hosts and multi-GPU
 machines; a single GPU should use `--workers 1`.
+
+For multi-GPU hosts, pass one device id per worker (`--devices 0,1` or
+`devices=["0", "1"]`). The orchestrator creates one single-worker process pool per
+device and assigns segments round-robin, so each worker keeps a model resident on its
+own GPU. Duplicate device ids are collapsed and the worker count is clamped to the
+number of devices and segments. Without `devices`, every worker uses
+`config.model.device`, which is only useful when that device is `cpu`.
 
 The full local-to-canonical table is written to
 `output/tracks/<run_id>_id_handovers.jsonl`, together with every accepted handover and

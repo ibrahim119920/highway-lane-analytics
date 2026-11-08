@@ -59,6 +59,7 @@ class RunResult:
     overlap_seconds: float = 0.0
     id_handovers: int = 0
     wall_s: float = 0.0
+    worker_devices: list[str] = field(default_factory=list)
 
     @property
     def processing_fps(self) -> float:

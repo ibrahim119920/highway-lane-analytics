@@ -185,19 +185,23 @@ lane-analytics doctor
 The first YOLO run downloads `yolo11n.pt` automatically. Use `--model yolov8n.pt` for a
 different checkpoint, or pass local weights.
 
-### Option D - parallel segmented processing (long clips)
+### Option D - optional parallel segmented processing (long clips)
 
-`analyze` can split a long clip into overlapping segments and process them in worker
-processes:
+The default is a single pass (`--workers 1`). Parallel mode is opt-in: `analyze` can
+split a long clip into overlapping segments and process them in worker processes:
 
 ```powershell
 lane-analytics analyze --video data/raw/tj_priok_5min.mp4 `
   --workers 3 --segment-seconds 12 --overlap-seconds 3
+
+# one worker per GPU (for example two T4s)
+lane-analytics analyze --video data/raw/tj_priok_5min.mp4 `
+  --workers 2 --devices 0,1
 ```
 
-Defaults are 12 s segments with 3 s overlap, so segment starts advance every 9 s (three
-segments per 30 s) and every seam shares 3 s of footage. Each worker runs a normal YOLO +
-ByteTrack pass over its segment and writes a frame log of tracked boxes.
+When enabled, the defaults are 12 s segments with 3 s overlap, so segment starts advance
+every 9 s (three segments per 30 s) and every seam shares 3 s of footage. Each worker runs
+a normal YOLO + ByteTrack pass over its segment and writes a frame log of tracked boxes.
 
 After the workers finish:
 
@@ -218,11 +222,17 @@ After the workers finish:
 The handover table (every local ID plus each matched pair with its IoU and heading
 scores) is written to `output/tracks/<run_id>_id_handovers.jsonl`.
 
-Use `--workers 1` to force a single pass. Parallelism is most useful when one YOLO
-process cannot saturate the machine, for example a many-core CPU server or multiple
-GPUs. On a 6-core laptop CPU a single pass already uses every physical core; segments
-then split the same compute, add overlap work, and may be slower. On a single GPU all
-workers share the same device, so keep `--workers 1` there.
+The default is `--workers 1` (single pass); this is the recommended mode for a normal
+laptop or a single GPU. On multiple GPUs, pass one device per worker with
+`--devices 0,1` (or `devices=["0", "1"]` in Python). The orchestrator creates one worker
+process per device, so each process loads its own model on its own GPU; duplicate device
+ids are collapsed and the worker count is clamped to the number of devices and segments.
+On a single GPU there is nothing to split, so keep `--workers 1`.
+
+Parallelism is most useful when one YOLO process cannot saturate the machine, for
+example a many-core CPU server or a multi-GPU host. On a 6-core laptop CPU a single pass
+already uses every physical core; segments then split the same compute, add overlap
+work, and may be slower.
 
 Measured on this repository's 6-core i5-11400H, 1200-frame window (YOLO11n, CPU,
 `imgsz: 960`): single pass 114 s, three workers 161-165 s. Both produced the same 81
