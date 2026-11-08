@@ -304,8 +304,8 @@ ratio as the recording; only the normalized values are stored.
 occupancy:
   anchor: bottom_center             # fallback: center | bottom_center | bottom_left | ...
   assignment: bbox_vote             # anchor | bbox_vote
-  bbox_vote_samples: 5              # points sampled along the bottom edge
-  bbox_vote_min_share: 0.5          # below this share, fall back to the anchor
+  bbox_vote_samples: 7              # points sampled along the bottom edge
+  bbox_vote_min_share: 0.6          # below this share, fall back to the anchor
   restrict_to_direction: true       # only vote among lanes of the locked direction
   anchor_shift_enabled: true        # fallback: slide wide near-field boxes to the outer corner
   anchor_shift_small_bbox_px: 90    # no shift at or below this box width

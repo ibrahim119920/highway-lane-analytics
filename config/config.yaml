@@ -101,8 +101,8 @@ occupancy:
   # Use the full bottom edge of the bounding box for the lane decision: wide
   # near-field boxes are sampled at several points and the majority lane wins.
   assignment: bbox_vote
-  bbox_vote_samples: 5
-  bbox_vote_min_share: 0.5
+  bbox_vote_samples: 7
+  bbox_vote_min_share: 0.6
   restrict_to_direction: true
   anchor_shift_enabled: true   # wide near-field boxes slide to the outer bottom corner
   anchor_shift_small_bbox_px: 90    # no shift at or below this box width

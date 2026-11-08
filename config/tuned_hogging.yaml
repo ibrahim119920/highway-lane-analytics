@@ -196,8 +196,8 @@ lanes:
 occupancy:
   anchor: bottom_center
   assignment: bbox_vote
-  bbox_vote_samples: 5
-  bbox_vote_min_share: 0.5
+  bbox_vote_samples: 7
+  bbox_vote_min_share: 0.6
   restrict_to_direction: true
   anchor_shift_enabled: true
   anchor_shift_small_bbox_px: 90
