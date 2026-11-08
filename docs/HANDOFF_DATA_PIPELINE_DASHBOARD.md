@@ -63,10 +63,14 @@ micro-batch HTTP untuk mensimulasikan feed near-real-time ke pipeline.
 | Batch processing video -> events/tracks/reports | **proyek ini** | selesai |
 | Replay sender dari Colab (`requests.post`) | **proyek ini** | selesai |
 | ngrok tunnel (`ngrok http 5000`) | operator | manual |
-| Webhook receiver FastAPI :5000 | proyek pipeline | belum |
-| Kafka broker + topic | proyek pipeline | belum |
-| Consumer, validasi, dedupe, Parquet/DuckDB | proyek pipeline | belum |
-| Dashboard | proyek pipeline | belum |
+| Webhook receiver FastAPI :5000 | proyek pipeline | **selesai** (receiver + auth + dedupe + `/health`, `/stats`) |
+| Kafka broker + topic | proyek pipeline | **selesai** (3 topic, key `camera_id`, retensi 7 hari) |
+| Consumer, validasi, dedupe, Parquet/DuckDB | proyek pipeline | **selesai** (silver/gold, karantina, export Parquet) |
+| Dashboard | proyek pipeline | **selesai** (4 halaman, filter run/kamera, indikator lag) |
+
+> Implementasi: <https://github.com/ibrahim119920/highway-lane-analytics-data-pipeline>
+> (commit `e2ff01f`; 20 tes lulus, CI Ubuntu + Windows). Jalur Kafka sudah diverifikasi
+> end-to-end dengan data demo dan run asli `source_video` (418 event / 328 track).
 
 > **Aturan handoff:** proyek ini hanya **mengirim** data. Tidak ada receiver, Kafka client,
 > consumer, atau dashboard di repo video analytics.
