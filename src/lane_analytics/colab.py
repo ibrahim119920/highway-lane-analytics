@@ -75,10 +75,16 @@ class ActivationResult:
 
 # --------------------------------------------------------------- secrets
 def _secret(name: str) -> str | None:
-    """Read a value from the environment, then from Colab Secrets."""
+    """Read a value from the environment, Kaggle Secrets, or Colab Secrets."""
     value = os.getenv(name)
     if value:
         return value
+    try:  # pragma: no cover - only available inside Kaggle
+        from kaggle_secrets import UserSecretsClient  # type: ignore
+
+        return UserSecretsClient().get_secret(name)
+    except Exception:
+        pass
     try:  # pragma: no cover - only available inside Colab
         from google.colab import userdata  # type: ignore
 

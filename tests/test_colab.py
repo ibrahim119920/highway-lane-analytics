@@ -10,6 +10,7 @@ import pytest
 from lane_analytics.colab import (
     ActivationError,
     _drive_file_id,
+    _secret,
     activate,
     discover_videos,
     extract_zip,
@@ -17,6 +18,11 @@ from lane_analytics.colab import (
     plan_base_timestamps,
     unique_run_ids,
 )
+
+
+def test_secret_prefers_environment(monkeypatch):
+    monkeypatch.setenv("WEBHOOK_URL", "https://example.test/hook")
+    assert _secret("WEBHOOK_URL") == "https://example.test/hook"
 
 
 def test_infer_timestamp_from_compact_name():
