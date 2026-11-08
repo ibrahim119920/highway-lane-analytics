@@ -107,6 +107,7 @@ class ReplayResult:
     duplicates: int = 0
     rejected: int = 0
     accepted: int = 0
+    media_events: int = 0
     elapsed_s: float = 0.0
     event_span_s: float = 0.0
     dry_run: bool = False
@@ -128,6 +129,7 @@ class ReplayResult:
             "duplicates": self.duplicates,
             "rejected": self.rejected,
             "accepted": self.accepted,
+            "media_events": self.media_events,
             "elapsed_s": round(self.elapsed_s, 3),
             "event_span_s": round(self.event_span_s, 3),
             "dry_run": self.dry_run,
@@ -636,6 +638,7 @@ def replay_run(
     health_delay: float = 10.0,
     complete: bool = True,
     validate: bool = True,
+    media_manifest: dict[str, dict[str, Any]] | None = None,
     dry_run: bool = False,
     dry_run_dir: str | Path | None = None,
     session: requests.Session | None = None,
@@ -703,6 +706,22 @@ def replay_run(
         events, run_id=effective_run_id, camera_id=camera_id
     )
 
+    media_event_count = 0
+    if media_manifest:
+        merged: list[dict[str, Any]] = []
+        for event in events:
+            fields = media_manifest.get(str(event.get("event_id")))
+            if fields:
+                item = dict(event)
+                for key, value in fields.items():
+                    if value is not None:
+                        item.setdefault(key, value)
+                merged.append(item)
+                media_event_count += 1
+            else:
+                merged.append(event)
+        events = merged
+
     tracks: list[dict[str, Any]] | None = None
     if tracks_path:
         tracks = load_jsonl(tracks_path)
@@ -724,6 +743,7 @@ def replay_run(
         dry_run=dry_run,
         batches_dir=None,
         base_url=(url or "").strip(),
+        media_events=media_event_count,
     )
     result.started_at = _utc_now()
     started = time.monotonic()

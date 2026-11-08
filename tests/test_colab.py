@@ -165,6 +165,69 @@ def test_activate_uses_production_pipeline_and_secret(tmp_path: Path, monkeypatc
     assert captured["source"] == "kaggle-replay"
 
 
+def test_activate_uploads_media_and_merges_manifest(tmp_path: Path, monkeypatch):
+    archive = tmp_path / "videos.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("clip.mp4", "dummy")
+
+    index = tmp_path / "index.json"
+    index.write_text("{}", encoding="utf-8")
+    captured: dict = {}
+
+    def fake_process_one(video, **kwargs):
+        return SimpleNamespace(
+            total_vehicles=1,
+            total_events=1,
+            hogging_events=1,
+            evidence_events=1,
+            evidence_snapshots=1,
+            evidence_clips=1,
+            evidence_dir=str(tmp_path / "evidence"),
+            evidence_index=str(index),
+            camera_id="cam_01",
+            events_path=str(tmp_path / "events.jsonl"),
+            tracks_path=str(tmp_path / "tracks.jsonl"),
+            reports_dir=str(tmp_path / "reports"),
+        )
+
+    class FakeMediaResult:
+        def by_event_id(self):
+            return {"e1": {"media_id": "m1", "video_path": "clips/a.mp4"}}
+
+        def as_dict(self):
+            return {"uploaded": 1, "failed": 0}
+
+    def fake_upload(*args, **kwargs):
+        captured["upload"] = kwargs
+        return FakeMediaResult()
+
+    def fake_replay(*args, **kwargs):
+        captured["replay"] = kwargs
+        return SimpleNamespace(as_dict=lambda: {})
+
+    monkeypatch.setattr("lane_analytics.colab._process_one", fake_process_one)
+    monkeypatch.setattr("lane_analytics.media.upload_evidence", fake_upload)
+    monkeypatch.setattr("lane_analytics.colab.replay_run", fake_replay)
+
+    result = activate(
+        source="drive_zip",
+        zip_path=archive,
+        video_dir=tmp_path / "raw",
+        replay=True,
+        webhook_url="https://lane-api.example",
+        webhook_token="token",
+        upload_media=True,
+        media_root="TrafficAnalytics",
+    )
+
+    assert result.processed == 1
+    assert captured["upload"]["camera_id"] == "cam_01"
+    assert captured["replay"]["media_manifest"] == {
+        "e1": {"media_id": "m1", "video_path": "clips/a.mp4"}
+    }
+    assert result.videos[0]["media"]["uploaded"] == 1
+
+
 def test_activate_accepts_session_and_run_id(tmp_path: Path, monkeypatch):
     archive = tmp_path / "videos.zip"
     with zipfile.ZipFile(archive, "w") as handle:

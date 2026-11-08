@@ -348,6 +348,8 @@ def _process_one(
     session_id: str = "",
     window_index: int | None = None,
     window_count: int | None = None,
+    upload_media: bool = False,
+    media_event_types: Sequence[str] = ("lane_hogging_indication",),
 ):
     from .pipeline import process_video
 
@@ -362,6 +364,9 @@ def _process_one(
         config.video.frame_stride = frame_stride
     if max_frames is not None:
         config.video.max_frames = max_frames
+    if upload_media:
+        config.evidence.enabled = True
+        config.evidence.event_types = [str(name) for name in media_event_types]
     config.validate()
     render_video = bool(config.evidence.enabled) if write_video is None else bool(write_video)
     return process_video(
@@ -392,6 +397,10 @@ def activate(
     frame_stride: int | None = None,
     max_frames: int | None = None,
     write_video: bool | None = None,
+    upload_media: bool = False,
+    media_root: str = "TrafficAnalytics",
+    media_event_types: Sequence[str] = ("lane_hogging_indication",),
+    media_manifest_path: str | Path | None = None,
     replay: bool = True,
     webhook_url: str | None = None,
     webhook_token: str | None = None,
@@ -533,6 +542,8 @@ def activate(
                 session_id=session_id or "",
                 window_index=window_index,
                 window_count=window_count,
+                upload_media=upload_media,
+                media_event_types=media_event_types,
             )
             item["vehicles"] = batch.total_vehicles
             item["events"] = batch.total_events
@@ -541,6 +552,33 @@ def activate(
             item["evidence_snapshots"] = batch.evidence_snapshots
             item["evidence_clips"] = batch.evidence_clips
             item["evidence_dir"] = batch.evidence_dir
+
+            media_by_event = None
+            if upload_media:
+                try:
+                    from .media import upload_evidence
+
+                    manifest_target = None
+                    if media_manifest_path:
+                        base = Path(media_manifest_path)
+                        manifest_target = (
+                            base
+                            if base.suffix.lower() == ".json"
+                            else base / f"{effective_run_id}_media.json"
+                        )
+                    media_result = upload_evidence(
+                        batch.evidence_index or "",
+                        camera_id=batch.camera_id,
+                        root=media_root,
+                        event_types=media_event_types,
+                        dry_run=dry_run,
+                        manifest_path=manifest_target,
+                    )
+                    media_by_event = media_result.by_event_id()
+                    item["media"] = media_result.as_dict()
+                except Exception as exc:  # media failure must not lose the run
+                    log.warning("Media upload failed for %s: %s", effective_run_id, exc)
+                    item["media_error"] = f"{type(exc).__name__}: {exc}"
 
             if replay:
                 replay_result = replay_run(
@@ -561,6 +599,7 @@ def activate(
                     retries=retries,
                     health_attempts=health_attempts,
                     health_delay=health_delay,
+                    media_manifest=media_by_event,
                     dry_run=dry_run,
                     skip_health_check=skip_health_check,
                 )

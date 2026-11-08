@@ -627,6 +627,25 @@ The full transport contract (endpoints, payloads, topics) is in
 the operational guide is [docs/PIPELINE_CLOUDFLARE.md](docs/PIPELINE_CLOUDFLARE.md).
 This repository only sends; it has no receiver, Kafka client, pipeline, or dashboard.
 
+## Evidence clips in Nextcloud
+
+Hogging evidence clips can be uploaded to Nextcloud over WebDAV and referenced from
+the JSON events by relative path. The webhook stays JSON-only.
+
+```powershell
+lane-analytics media upload `
+  --index output/evidence/<run_id>/index.json `
+  --camera-id tj_priok_km58_400b `
+  --out output/evidence/<run_id>/media_manifest.json
+
+lane-analytics replay ... --media-manifest output/evidence/<run_id>/media_manifest.json
+```
+
+Credentials come from `NEXTCLOUD_URL`, `NEXTCLOUD_USER`, and
+`NEXTCLOUD_APP_PASSWORD`. See
+[docs/NEXTCLOUD_MEDIA.md](docs/NEXTCLOUD_MEDIA.md) for the path layout, event
+fields, status values, and the signed-proxy plan.
+
 ## CLI
 
 | Command | Purpose |
@@ -640,6 +659,7 @@ This repository only sends; it has no receiver, Kafka client, pipeline, or dashb
 | `lane-analytics tune` | Fit hogging thresholds against the manual label sheet. |
 | `lane-analytics record` | Record a live HLS/HTTP stream for a fixed duration. |
 | `lane-analytics replay` | Send precomputed artifacts to the production pipeline (Cloudflare Tunnel). |
+| `lane-analytics media upload` | Upload hogging evidence clips to Nextcloud and write a manifest. |
 | `lane-analytics pipeline-status` | Check pipeline `/health` and `/stats`. |
 | `lane-analytics doctor` | Show dependency and environment status. |
 

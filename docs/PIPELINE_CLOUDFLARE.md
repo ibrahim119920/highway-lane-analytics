@@ -125,3 +125,9 @@ curl -s https://lane-api.syaifudin-fam.my.id/stats
   `PIPELINE_WEBHOOK_TOKEN`; URL default produksi.
 - `notebooks/kaggle_production.ipynb` - mode live/drive per window, replay ke
   pipeline, dan ringkasan `/stats` di bundle akhir.
+
+## Media clips
+
+Klip bukti hogging tidak dikirim lewat webhook. Upload ke Nextcloud lewat WebDAV,
+lalu sertakan `video_path` di event. Lihat
+[`NEXTCLOUD_MEDIA.md`](NEXTCLOUD_MEDIA.md).

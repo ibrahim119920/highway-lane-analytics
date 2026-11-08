@@ -369,6 +369,51 @@ def test_check_health_rejects_unhealthy_payload():
         check_health("https://lane-api.example", session=session)
 
 
+def test_replay_merges_media_manifest(tmp_path: Path):
+    event = make_event(0.0)
+    events_path = write_jsonl(tmp_path / "run_a.jsonl", [event])
+    manifest = {
+        event["event_id"]: {
+            "media_id": "media-1",
+            "video_path": "TrafficAnalytics/events/cam_01/2026/11/08/run_a/clips/clip.mp4",
+            "media_status": "COMPLETED",
+            "file_size": 123,
+        }
+    }
+    session = FakeSession()
+    result = replay_run(
+        events_path,
+        url="https://lane-api.example",
+        token="secret",
+        run_id="run_a",
+        media_manifest=manifest,
+        session=session,
+        sleep=lambda _: None,
+    )
+    sent = session.calls[1][1]["events"][0]
+    assert sent["video_path"].endswith("clip.mp4")
+    assert sent["media_id"] == "media-1"
+    assert result.media_events == 1
+
+
+def test_replay_dry_run_writes_media_fields(tmp_path: Path):
+    event = make_event(0.0)
+    events_path = write_jsonl(tmp_path / "run_a.jsonl", [event])
+    manifest = {event["event_id"]: {"video_path": "clips/a.mp4"}}
+    result = replay_run(
+        events_path,
+        media_manifest=manifest,
+        dry_run=True,
+        dry_run_dir=tmp_path / "out",
+        run_id="run_a",
+    )
+    body = json.loads(
+        (tmp_path / "out" / "run_a" / "events_0000.json").read_text(encoding="utf-8")
+    )
+    assert body["events"][0]["video_path"] == "clips/a.mp4"
+    assert result.media_events == 1
+
+
 def test_resolve_base_url_and_token_from_environment(monkeypatch):
     monkeypatch.delenv("PIPELINE_BASE_URL", raising=False)
     monkeypatch.delenv("WEBHOOK_URL", raising=False)

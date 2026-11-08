@@ -228,6 +228,10 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument(
         "--source", help="envelope source label (default: kaggle-replay)"
     )
+    replay.add_argument(
+        "--media-manifest",
+        help="JSON manifest from 'lane-analytics media upload' to merge into events",
+    )
     replay.add_argument("--run-id", help="override the run id (default: events filename)")
     replay.add_argument("--speed", type=float, default=1.0, help="1 = real time, 10 = 10x")
     replay.add_argument(
@@ -269,6 +273,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status.add_argument("--token", help="bearer token (default: PIPELINE_WEBHOOK_TOKEN)")
     status.add_argument("--timeout", type=float, default=10.0)
+
+    media = subparsers.add_parser(
+        "media", help="upload evidence clips to Nextcloud (WebDAV)"
+    )
+    media_sub = media.add_subparsers(dest="media_command", required=True)
+    media_upload = media_sub.add_parser(
+        "upload", help="build a media manifest and upload selected evidence clips"
+    )
+    media_upload.add_argument(
+        "--index", required=True, help="path to output/evidence/<run_id>/index.json"
+    )
+    media_upload.add_argument(
+        "--camera-id", help="override camera_id when the index does not have one"
+    )
+    media_upload.add_argument(
+        "--root", default="TrafficAnalytics", help="Nextcloud root folder"
+    )
+    media_upload.add_argument(
+        "--types",
+        nargs="+",
+        default=["lane_hogging_indication"],
+        help="event types whose clips should be uploaded",
+    )
+    media_upload.add_argument(
+        "--dry-run", action="store_true", help="write the manifest without uploading"
+    )
+    media_upload.add_argument(
+        "--out", help="manifest output path (default: <index dir>/media_manifest.json)"
+    )
+    media_upload.add_argument(
+        "--no-skip-existing",
+        action="store_true",
+        help="upload even when the remote file already has the same size",
+    )
     return parser
 
 
@@ -578,6 +616,16 @@ def _replay(args: argparse.Namespace) -> int:
         )
         return 1
 
+    media_manifest = None
+    if getattr(args, "media_manifest", None):
+        from .media import MediaError, load_media_manifest
+
+        try:
+            media_manifest = load_media_manifest(args.media_manifest)
+        except MediaError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
     try:
         result = replay_run(
             args.events,
@@ -598,6 +646,7 @@ def _replay(args: argparse.Namespace) -> int:
             health_delay=args.health_delay,
             complete=not args.no_complete,
             start_at_first_event=not args.no_skip_idle,
+            media_manifest=media_manifest,
             dry_run=args.dry_run,
             dry_run_dir=args.out,
         )
@@ -619,6 +668,8 @@ def _replay(args: argparse.Namespace) -> int:
         f"Run metadata : {'sent (complete=true)' if result.run_sent else 'not sent'}"
     )
     print(f"Accepted     : {result.accepted} (reported by receiver)")
+    if result.media_events:
+        print(f"Media events : {result.media_events} (event fields merged)")
     print(f"Retries      : {result.retries}")
     print(f"Duplicates   : {result.duplicates} (reported by receiver)")
     print(f"Rejected     : {result.rejected} (reported by receiver)")
@@ -694,6 +745,57 @@ def _pipeline_status(args: argparse.Namespace) -> int:
     ):
         if key in flat:
             print(f"{key:<18}: {flat[key]}")
+    return 0
+
+
+def _media(args: argparse.Namespace) -> int:
+    import requests
+
+    from .media import MediaError, upload_evidence
+
+    if getattr(args, "media_command", None) != "upload":
+        print("error: unknown media command", file=sys.stderr)
+        return 2
+
+    manifest = args.out
+    if not manifest:
+        manifest = str(Path(args.index).parent / "media_manifest.json")
+
+    try:
+        result = upload_evidence(
+            args.index,
+            camera_id=args.camera_id,
+            root=args.root,
+            event_types=args.types,
+            dry_run=args.dry_run,
+            skip_existing=not args.no_skip_existing,
+            manifest_path=manifest,
+        )
+    except MediaError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except requests.RequestException as exc:  # pragma: no cover - network
+        print(f"error: Nextcloud request failed: {exc}", file=sys.stderr)
+        return 1
+
+    print()
+    print("Media summary")
+    print("-------------")
+    print(f"Run ID      : {result.run_id}")
+    print(f"Camera      : {result.camera_id}")
+    print(f"Root        : {result.root}")
+    print(f"Clips       : {len(result.entries)}")
+    print(f"Uploaded    : {result.uploaded}")
+    print(f"Skipped     : {result.skipped}")
+    print(f"Failed      : {result.failed}")
+    if result.dry_run:
+        print("Mode        : dry-run (no HTTP)")
+    print(f"Manifest    : {result.manifest_path or manifest}")
+    if result.failed:
+        for entry in result.entries:
+            if entry.status == "FAILED":
+                print(f"  failed {entry.media_id}: {entry.error}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -863,6 +965,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "pipeline-status":
             return _pipeline_status(args)
+
+        if args.command == "media":
+            return _media(args)
 
         if args.command == "doctor":
             return _doctor()
