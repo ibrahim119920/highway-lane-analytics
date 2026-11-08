@@ -87,6 +87,55 @@ def build_lane_regions(config: AppConfig) -> list[LaneRegion]:
     ]
 
 
+def create_lane_tracker(
+    config: AppConfig,
+    *,
+    frame_width: int,
+    frame_height: int,
+    session_id: str = "",
+    window_index: int | None = None,
+    window_count: int | None = None,
+) -> LaneTracker:
+    """Build a configured tracker (shared by the pipeline and the tuning CLI)."""
+    lanes = build_lane_regions(config)
+    rules = build_rules(config.hogging.rules) if config.hogging.enabled else []
+    return LaneTracker(
+        lanes,
+        frame_width=frame_width,
+        frame_height=frame_height,
+        camera_id=config.camera_id,
+        anchor=config.occupancy.anchor,
+        assignment=config.occupancy.assignment,
+        bbox_vote_samples=config.occupancy.bbox_vote_samples,
+        bbox_vote_min_share=config.occupancy.bbox_vote_min_share,
+        restrict_to_direction=config.occupancy.restrict_to_direction,
+        anchor_shift_enabled=config.occupancy.anchor_shift_enabled,
+        anchor_shift_small_bbox_px=config.occupancy.anchor_shift_small_bbox_px,
+        anchor_shift_large_bbox_px=config.occupancy.anchor_shift_large_bbox_px,
+        direction_deadband_px=config.occupancy.direction_deadband_px,
+        direction_min_votes=config.occupancy.direction_min_votes,
+        min_confidence=config.occupancy.min_confidence,
+        min_lane_frames=config.occupancy.min_lane_frames,
+        max_track_age_frames=config.occupancy.max_track_age_frames,
+        emit_lane_enter=config.occupancy.emit_lane_enter,
+        emit_lane_exit=config.occupancy.emit_lane_exit,
+        emit_lane_change=config.occupancy.emit_lane_change,
+        hogging_enabled=config.hogging.enabled,
+        hogging_rules=rules,
+        retrigger_after_seconds=config.hogging.retrigger_after_seconds,
+        hogging_evaluate_at=config.hogging.evaluate_at,
+        overtake_exemption=config.hogging.overtake_exemption,
+        overtake_gap_fraction=config.hogging.overtake_gap_fraction,
+        overtake_gap_back_fraction=config.hogging.overtake_gap_back_fraction,
+        overtake_speed_margin_px_s=config.hogging.overtake_speed_margin_px_s,
+        overtake_confirm_seconds=config.hogging.overtake_confirm_seconds,
+        overtake_stint_memory=config.hogging.overtake_stint_memory,
+        session_id=session_id,
+        window_index=window_index,
+        window_count=window_count,
+    )
+
+
 def process_video(
     config: AppConfig,
     *,
@@ -195,27 +244,10 @@ def process_video(
     )
 
     lanes = build_lane_regions(config)
-    rules = build_rules(config.hogging.rules) if config.hogging.enabled else []
-    tracker = LaneTracker(
-        lanes,
+    tracker = create_lane_tracker(
+        config,
         frame_width=width,
         frame_height=height,
-        camera_id=config.camera_id,
-        anchor=config.occupancy.anchor,
-        anchor_shift_enabled=config.occupancy.anchor_shift_enabled,
-        anchor_shift_small_bbox_px=config.occupancy.anchor_shift_small_bbox_px,
-        anchor_shift_large_bbox_px=config.occupancy.anchor_shift_large_bbox_px,
-        direction_deadband_px=config.occupancy.direction_deadband_px,
-        direction_min_votes=config.occupancy.direction_min_votes,
-        min_confidence=config.occupancy.min_confidence,
-        min_lane_frames=config.occupancy.min_lane_frames,
-        max_track_age_frames=config.occupancy.max_track_age_frames,
-        emit_lane_enter=config.occupancy.emit_lane_enter,
-        emit_lane_exit=config.occupancy.emit_lane_exit,
-        emit_lane_change=config.occupancy.emit_lane_change,
-        hogging_enabled=config.hogging.enabled,
-        hogging_rules=rules,
-        retrigger_after_seconds=config.hogging.retrigger_after_seconds,
         session_id=session_id,
         window_index=window_index,
         window_count=window_count,
@@ -478,7 +510,7 @@ def process_video(
         "processing_fps": round(frames_processed / processing_s, 2) if processing_s > 0 else 0.0,
         "base_timestamp": base_timestamp.isoformat(timespec="seconds"),
         "lanes": [lane.as_dict() for lane in lanes],
-        "hogging_rules": [rule.name for rule in rules],
+        "hogging_rules": [rule.name for rule in config.hogging.rules],
         "evidence": (
             evidence_result.as_dict() if evidence_result is not None else {"enabled": False}
         ),

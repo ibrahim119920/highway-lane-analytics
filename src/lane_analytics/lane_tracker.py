@@ -25,14 +25,22 @@ class _TrackState:
     last_time_s: float
     lane: LaneRegion | None = None
     stint: LaneStint | None = None
-    class_votes: Counter[str] = field(default_factory=Counter)
+    class_votes: dict[str, float] = field(default_factory=dict)
+    class_counts: Counter[str] = field(default_factory=Counter)
     class_ids: dict[str, int] = field(default_factory=dict)
     direction: str = ""
     direction_votes: dict[str, int] = field(
         default_factory=lambda: {"northbound": 0, "southbound": 0}
     )
     previous_bottom_y: float | None = None
+    previous_time_s: float | None = None
+    speed_px_s: float = 0.0
     anchor_point: tuple[float, float] | None = None
+    overtaking: bool = False
+    overtake_since_time_s: float | None = None
+    overtake_seconds: float = 0.0
+    overtake_last_time_s: float | None = None
+    stint_overtook: bool = False
     pending_active: bool = False
     pending_lane: LaneRegion | None = None
     pending_since_frame: int = 0
@@ -64,6 +72,10 @@ class LaneTracker:
         frame_height: int,
         camera_id: str = "",
         anchor: str = "bottom_center",
+        assignment: str = "anchor",
+        bbox_vote_samples: int = 5,
+        bbox_vote_min_share: float = 0.6,
+        restrict_to_direction: bool = True,
         anchor_shift_enabled: bool = False,
         anchor_shift_small_bbox_px: float = 90.0,
         anchor_shift_large_bbox_px: float = 250.0,
@@ -78,6 +90,13 @@ class LaneTracker:
         hogging_enabled: bool = True,
         hogging_rules: Sequence[HoggingRule] = (),
         retrigger_after_seconds: float = 0.0,
+        hogging_evaluate_at: str = "live",
+        overtake_exemption: bool = False,
+        overtake_gap_fraction: float = 0.10,
+        overtake_gap_back_fraction: float = 0.50,
+        overtake_speed_margin_px_s: float = 3.0,
+        overtake_confirm_seconds: float = 0.2,
+        overtake_stint_memory: bool = False,
         session_id: str = "",
         window_index: int | None = None,
         window_count: int | None = None,
@@ -91,6 +110,10 @@ class LaneTracker:
         self._frame_height = int(frame_height)
         self._camera_id = camera_id
         self._anchor = anchor
+        self._assignment = str(assignment or "anchor")
+        self._bbox_vote_samples = max(3, int(bbox_vote_samples))
+        self._bbox_vote_min_share = min(1.0, max(0.0, float(bbox_vote_min_share)))
+        self._restrict_to_direction = bool(restrict_to_direction)
         self._anchor_shift_enabled = bool(anchor_shift_enabled)
         self._anchor_shift_small = float(anchor_shift_small_bbox_px)
         self._anchor_shift_large = float(anchor_shift_large_bbox_px)
@@ -105,6 +128,13 @@ class LaneTracker:
         self._hogging_enabled = bool(hogging_enabled) and bool(hogging_rules)
         self._rules = list(hogging_rules)
         self._retrigger_after = max(0.0, float(retrigger_after_seconds))
+        self._hogging_evaluate_at = "stint" if str(hogging_evaluate_at) == "stint" else "live"
+        self._overtake_exemption = bool(overtake_exemption)
+        self._overtake_gap_fraction = min(1.0, max(0.0, float(overtake_gap_fraction)))
+        self._overtake_gap_back_fraction = min(1.0, max(0.0, float(overtake_gap_back_fraction)))
+        self._overtake_speed_margin = max(0.0, float(overtake_speed_margin_px_s))
+        self._overtake_confirm = max(0.0, float(overtake_confirm_seconds))
+        self._overtake_stint_memory = bool(overtake_stint_memory)
         self._session_id = str(session_id or "")
         self._window_index = window_index
         self._window_count = window_count
@@ -146,6 +176,7 @@ class LaneTracker:
         """Update track state for one processed frame and return new events."""
         events: list[LaneEvent] = []
         events.extend(self._prune(frame_index))
+        observed: list[_TrackState] = []
 
         for obj in objects:
             if obj.confidence < self._min_confidence:
@@ -167,18 +198,24 @@ class LaneTracker:
                 self._states[state.track_id] = state
                 self._tracks_seen += 1
 
-            # Vote on the class instead of trusting the latest frame: a single
-            # "bus" frame inside a car track must not trigger a heavy-vehicle rule.
+            # Confidence-weighted vote on the class instead of trusting the latest
+            # frame: a single low-confidence "bus" frame inside a truck track must
+            # not turn the whole vehicle into a heavy-vehicle rule match.
             observed_name = str(obj.class_name)
-            state.class_votes[observed_name] += 1
+            state.class_votes[observed_name] = (
+                state.class_votes.get(observed_name, 0.0) + float(obj.confidence)
+            )
+            state.class_counts[observed_name] += 1
             state.class_ids[observed_name] = int(obj.class_id)
-            dominant = state.class_votes.most_common(1)[0][0]
+            dominant = max(
+                state.class_votes,
+                key=lambda name: (state.class_votes[name], state.class_counts[name]),
+            )
             state.class_name = dominant
             state.class_id = state.class_ids.get(dominant, int(obj.class_id))
             state.confidence = float(obj.confidence)
             state.last_frame = int(frame_index)
             state.last_timestamp = timestamp
-            state.last_time_s = float(video_time_s)
 
             # Travel direction from vertical box motion: receding (northbound) traffic
             # moves up (y decreasing), approaching (southbound) traffic moves down.
@@ -195,7 +232,18 @@ class LaneTracker:
                 south = state.direction_votes["southbound"]
                 if max(north, south) >= self._direction_min_votes and north != south:
                     state.direction = "northbound" if north > south else "southbound"
+
+            # Longitudinal speed (px/s) from the tyre/road contact point. It is
+            # used only for relative comparisons between vehicles, never as an
+            # absolute km/h estimate.
+            if state.previous_bottom_y is not None and state.previous_time_s is not None:
+                delta_t = float(video_time_s) - state.previous_time_s
+                if delta_t > 1e-6:
+                    instant = (bottom_y - state.previous_bottom_y) / delta_t
+                    state.speed_px_s = 0.65 * state.speed_px_s + 0.35 * instant
             state.previous_bottom_y = bottom_y
+            state.previous_time_s = float(video_time_s)
+            state.last_time_s = float(video_time_s)
 
             candidate = self._lane_for(obj, state)
             events.extend(
@@ -207,14 +255,24 @@ class LaneTracker:
                     time_s=float(video_time_s),
                 )
             )
-            events.extend(
-                self._evaluate_hogging(
-                    state,
-                    frame_index=int(frame_index),
-                    timestamp=timestamp,
-                    time_s=float(video_time_s),
+            observed.append(state)
+
+        # Overtake context needs the whole frame, not a per-object streaming view:
+        # compare each lane-2/3 vehicle with the vehicles in the adjacent inner lane.
+        if self._overtake_exemption:
+            for state in observed:
+                self._update_overtaking(state, observed, time_s=float(video_time_s))
+
+        if self._hogging_evaluate_at == "live":
+            for state in observed:
+                events.extend(
+                    self._evaluate_hogging(
+                        state,
+                        frame_index=int(frame_index),
+                        timestamp=timestamp,
+                        time_s=float(video_time_s),
+                    )
                 )
-            )
 
         self._event_count += len(events)
         return events
@@ -243,6 +301,10 @@ class LaneTracker:
 
     # ------------------------------------------------------------- lane matching
     def _lane_for(self, obj: TrackedObject, state: _TrackState) -> LaneRegion | None:
+        if self._assignment == "bbox_vote":
+            lane = self._lane_from_bbox_vote(obj, state)
+            if lane is not None:
+                return lane
         if self._anchor_shift_enabled:
             anchor_x, anchor_y = obj.directional_anchor(
                 frame_width=self._frame_width,
@@ -255,6 +317,121 @@ class LaneTracker:
         state.anchor_point = (anchor_x, anchor_y)
         point = (anchor_x / self._frame_width, anchor_y / self._frame_height)
         return assign_lane(point, self._lanes)
+
+    def _lane_from_bbox_vote(
+        self, obj: TrackedObject, state: _TrackState
+    ) -> LaneRegion | None:
+        """Assign a lane by voting across the bottom edge of the bounding box.
+
+        A single contact point is ambiguous for a wide near-field box: a truck
+        straddling the painted divider can have its bottom-centre on either side.
+        Sampling several points along the bottom edge and taking the majority
+        makes the assignment follow the physical footprint of the vehicle.
+        """
+        x1, _y1, x2, y2 = obj.bbox
+        lanes = self._lanes
+        if self._restrict_to_direction:
+            direction = state.lane.direction if state.lane else state.direction
+            if direction:
+                directional = [lane for lane in lanes if lane.direction == direction]
+                if directional:
+                    lanes = directional
+
+        width = max(0.0, x2 - x1)
+        samples = self._bbox_vote_samples
+        votes: dict[str, int] = {}
+        lane_by_name = {lane.name: lane for lane in lanes}
+        total = 0
+        for index in range(samples):
+            # Spread the samples from 10% to 90% of the box width.
+            fraction = 0.1 + 0.8 * (index / (samples - 1)) if samples > 1 else 0.5
+            point = ((x1 + width * fraction) / self._frame_width, y2 / self._frame_height)
+            lane = assign_lane(point, lanes)
+            if lane is None:
+                continue
+            total += 1
+            votes[lane.name] = votes.get(lane.name, 0) + 1
+
+        if not votes:
+            return None
+        best_name, best_votes = max(
+            votes.items(),
+            key=lambda item: (
+                item[1],
+                -lane_by_name[item[0]].area,
+                lane_by_name[item[0]].index or 0,
+            ),
+        )
+        if total and best_votes / total < self._bbox_vote_min_share:
+            return None
+        lane = lane_by_name[best_name]
+        # Use the voted lane's footprint midpoint as the anchor for downstream
+        # overtake/kinematics bookkeeping; keep the contact point y.
+        state.anchor_point = ((x1 + x2) / 2.0, y2)
+        return lane
+
+    def _update_overtaking(
+        self, state: _TrackState, observed: Sequence[_TrackState], *, time_s: float
+    ) -> None:
+        """Flag vehicles that are actively passing a slower inner-lane vehicle."""
+        lane = state.lane
+        if lane is None or lane.index is None or lane.index < 2 or state.anchor_point is None:
+            state.overtaking = False
+            state.overtake_since_time_s = None
+            return
+
+        direction = lane.direction
+        if direction not in {"northbound", "southbound"}:
+            direction = state.direction
+        if direction not in {"northbound", "southbound"}:
+            state.overtaking = False
+            state.overtake_since_time_s = None
+            return
+
+        # Image y grows downwards: northbound traffic recedes (y decreases), so a
+        # vehicle "ahead" has a smaller y. Southbound traffic approaches, so ahead
+        # means a larger y.
+        heading = -1.0 if direction == "northbound" else 1.0
+        ego_y = state.anchor_point[1]
+        ego_speed = abs(state.speed_px_s)
+        gap_limit = self._overtake_gap_fraction * self._frame_height
+
+        passing = False
+        for other in observed:
+            if other is state or other.lane is None or other.anchor_point is None:
+                continue
+            if other.lane.direction != lane.direction:
+                continue
+            if other.lane.index != lane.index - 1:
+                continue
+            gap = (other.anchor_point[1] - ego_y) * heading
+            # A vehicle just passed (slightly behind the ego) still counts: the
+            # pass may have completed right at the edge of the analysis zone.
+            if gap < -gap_limit * self._overtake_gap_back_fraction or gap > gap_limit:
+                continue
+            other_speed = abs(other.speed_px_s)
+            if other_speed + self._overtake_speed_margin <= ego_speed:
+                passing = True
+                break
+
+        dt = 0.0
+        if state.overtake_last_time_s is not None:
+            dt = max(0.0, float(time_s) - state.overtake_last_time_s)
+        state.overtake_last_time_s = float(time_s)
+
+        if passing:
+            state.overtake_seconds += dt
+            if state.overtake_since_time_s is None:
+                state.overtake_since_time_s = float(time_s)
+            state.overtaking = (
+                float(time_s) - state.overtake_since_time_s + 1e-9
+                >= self._overtake_confirm
+            )
+            if state.overtaking:
+                state.stint_overtook = True
+        else:
+            state.overtake_since_time_s = None
+            state.overtaking = False
 
     @staticmethod
     def _name(lane: LaneRegion | None) -> str | None:
@@ -327,6 +504,18 @@ class LaneTracker:
                         dwell_seconds=previous_dwell,
                     )
                 )
+            if self._hogging_evaluate_at == "stint":
+                events.extend(
+                    self._evaluate_stint_hogging(
+                        state,
+                        previous,
+                        previous_stint,
+                        previous_dwell,
+                        frame_index=enter_frame,
+                        timestamp=enter_timestamp,
+                        time_s=enter_time,
+                    )
+                )
             state.stint = None
 
         if candidate is not None:
@@ -343,6 +532,12 @@ class LaneTracker:
             state.stint = stint
             state.stints.append(stint)
             state.lane = candidate
+            # Overtake evidence is scoped to one lane stint.
+            state.overtaking = False
+            state.overtake_since_time_s = None
+            state.overtake_last_time_s = None
+            state.stint_overtook = False
+            state.overtake_seconds = 0.0
             if previous is not None:
                 state.lane_changes += 1
                 self._lane_change_count += 1
@@ -399,6 +594,13 @@ class LaneTracker:
         rule = active_rule(self._rules, state.lane, state.class_name)
         if rule is None or dwell + 1e-9 < rule.min_dwell_seconds:
             return []
+        # Passing a slower vehicle in the adjacent inner lane is legitimate use of
+        # lane 2/3. Exempt while the pass is happening; with stint memory, the
+        # whole lane stint is exempt once a pass has been confirmed (the manual
+        # labels treat a completed pass as allowed, not as post-pass hogging).
+        if rule.exempt_when_overtaking:
+            if state.overtaking or (self._overtake_stint_memory and state.stint_overtook):
+                return []
 
         state.active_hogging_rule = rule.name
         state.active_hogging_severity = rule.severity
@@ -426,6 +628,47 @@ class LaneTracker:
                 severity=rule.severity,
                 rule_name=rule.name,
                 message=rule.message(state.lane, state.class_name),
+            )
+        ]
+
+    def _evaluate_stint_hogging(
+        self,
+        state: _TrackState,
+        lane: LaneRegion,
+        stint: LaneStint,
+        dwell: float,
+        *,
+        frame_index: int,
+        timestamp: str,
+        time_s: float,
+    ) -> list[LaneEvent]:
+        """Decide a closed stint using the whole-stint evidence."""
+        if not self._hogging_enabled or lane is None:
+            return []
+        rule = active_rule(self._rules, lane, state.class_name)
+        if rule is None or dwell + 1e-9 < rule.min_dwell_seconds:
+            return []
+        if rule.exempt_when_overtaking and state.stint_overtook:
+            return []
+        key = (stint.stint_id, rule.name)
+        if key in state.triggered:
+            return []
+        state.triggered[key] = dwell
+        state.hogging_count += 1
+        self._hogging_count += 1
+        return [
+            self._event(
+                state,
+                event_type="lane_hogging_indication",
+                lane=lane,
+                confidence=state.confidence,
+                frame_index=frame_index,
+                timestamp=timestamp,
+                time_s=time_s,
+                dwell_seconds=dwell,
+                severity=rule.severity,
+                rule_name=rule.name,
+                message=rule.message(lane, state.class_name),
             )
         ]
 
@@ -480,6 +723,18 @@ class LaneTracker:
                         dwell_seconds=dwell,
                     )
                 )
+            if self._hogging_evaluate_at == "stint" and state.lane is not None:
+                events.extend(
+                    self._evaluate_stint_hogging(
+                        state,
+                        state.lane,
+                        state.stint,
+                        dwell,
+                        frame_index=end_frame,
+                        timestamp=end_timestamp,
+                        time_s=end_time,
+                    )
+                )
             state.stint = None
 
         if not state.summarized:
@@ -526,17 +781,37 @@ class LaneTracker:
             dwell = 0.0
             if state.stint is not None:
                 dwell = max(0.0, state.last_time_s - state.stint.enter_time_s)
+            hogging = bool(state.active_hogging_rule)
+            severity = state.active_hogging_severity
+            rule_name = state.active_hogging_rule
+            if self._hogging_evaluate_at == "stint" and state.lane is not None:
+                # Preview the decision the tracker will make when the stint closes.
+                rule = active_rule(self._rules, state.lane, state.class_name)
+                if (
+                    rule is not None
+                    and dwell + 1e-9 >= rule.min_dwell_seconds
+                    and not (
+                        rule.exempt_when_overtaking
+                        and (state.overtaking or state.stint_overtook)
+                    )
+                ):
+                    hogging = True
+                    severity = rule.severity
+                    rule_name = rule.name
             status[track_id] = {
                 "lane": state.lane.name if state.lane else "",
                 "lane_index": state.lane.index if state.lane else None,
                 "lane_role": state.lane.role if state.lane else "",
                 "dwell_seconds": round(dwell, 2),
-                "hogging": bool(state.active_hogging_rule),
-                "severity": state.active_hogging_severity,
-                "rule": state.active_hogging_rule,
+                "hogging": hogging,
+                "severity": severity,
+                "rule": rule_name,
                 "lane_changes": state.lane_changes,
                 "anchor": state.anchor_point,
                 "direction": state.direction,
+                "overtaking": bool(state.overtaking),
+                "stint_overtook": bool(state.stint_overtook),
+                "speed_px_s": round(float(state.speed_px_s), 2),
             }
         return status
 

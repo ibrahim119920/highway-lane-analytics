@@ -13,6 +13,7 @@ from .geometry import polygon_area
 from .utils import parse_timestamp
 
 ANCHOR_TYPES = ("center", "bottom_center", "bottom_left", "bottom_right", "top_center")
+ASSIGNMENT_TYPES = ("anchor", "bbox_vote")
 SEVERITIES = ("low", "medium", "high")
 EVIDENCE_EVENT_TYPES = (
     "lane_enter",
@@ -57,6 +58,12 @@ class LaneConfig:
 @dataclass
 class OccupancyConfig:
     anchor: str = "bottom_center"
+    # "anchor" = single reference point; "bbox_vote" = majority vote of points
+    # sampled along the bottom edge of the bounding box.
+    assignment: str = "anchor"
+    bbox_vote_samples: int = 5
+    bbox_vote_min_share: float = 0.6
+    restrict_to_direction: bool = True
     anchor_shift_enabled: bool = False
     anchor_shift_small_bbox_px: float = 90.0
     anchor_shift_large_bbox_px: float = 250.0
@@ -75,8 +82,10 @@ class HoggingRuleConfig:
     name: str = "rule"
     lanes: list[str] = field(default_factory=list)
     lane_roles: list[str] = field(default_factory=list)
+    lane_indices: list[int] = field(default_factory=list)
     classes: list[str] = field(default_factory=list)
     min_dwell_seconds: float = 8.0
+    exempt_when_overtaking: bool = True
     severity: str = "medium"
     description: str = ""
 
@@ -85,6 +94,18 @@ class HoggingRuleConfig:
 class HoggingConfig:
     enabled: bool = True
     retrigger_after_seconds: float = 0.0
+    # "live" emits as soon as the dwell threshold is met; "stint" waits until the
+    # lane stint ends so the whole pass is visible (recommended with overtaking
+    # context, because a pass can happen late in the stint).
+    evaluate_at: str = "stint"
+    # A vehicle that is actively passing a slower vehicle in the adjacent inner
+    # lane is not a lane hogger, even when it spends a long time in lane 2/3.
+    overtake_exemption: bool = True
+    overtake_gap_fraction: float = 0.10   # max longitudinal gap, fraction of frame height
+    overtake_gap_back_fraction: float = 0.50  # allow a just-passed vehicle behind the ego
+    overtake_speed_margin_px_s: float = 3.0
+    overtake_confirm_seconds: float = 0.2
+    overtake_stint_memory: bool = True     # a completed pass exempts the whole stint
     rules: list[HoggingRuleConfig] = field(default_factory=list)
 
 
@@ -206,6 +227,14 @@ class AppConfig:
             raise ConfigError(
                 "occupancy.anchor must be one of: " + ", ".join(ANCHOR_TYPES)
             )
+        if occupancy.assignment not in ASSIGNMENT_TYPES:
+            raise ConfigError(
+                "occupancy.assignment must be one of: " + ", ".join(ASSIGNMENT_TYPES)
+            )
+        if occupancy.bbox_vote_samples < 3:
+            raise ConfigError("occupancy.bbox_vote_samples must be >= 3")
+        if not 0.0 < occupancy.bbox_vote_min_share <= 1.0:
+            raise ConfigError("occupancy.bbox_vote_min_share must be in (0, 1]")
         if not 0.0 <= occupancy.min_confidence <= 1.0:
             raise ConfigError("occupancy.min_confidence must be between 0 and 1")
         if occupancy.min_lane_frames < 1:
@@ -227,6 +256,18 @@ class AppConfig:
         hogging = self.hogging
         if float(hogging.retrigger_after_seconds) < 0:
             raise ConfigError("hogging.retrigger_after_seconds must be >= 0")
+        if str(hogging.evaluate_at) not in {"live", "stint"}:
+            raise ConfigError("hogging.evaluate_at must be 'live' or 'stint'")
+        if not 0.0 < float(hogging.overtake_gap_fraction) <= 1.0:
+            raise ConfigError("hogging.overtake_gap_fraction must be in (0, 1]")
+        if not 0.0 <= float(hogging.overtake_gap_back_fraction) <= 1.0:
+            raise ConfigError("hogging.overtake_gap_back_fraction must be in [0, 1]")
+        if float(hogging.overtake_speed_margin_px_s) < 0:
+            raise ConfigError("hogging.overtake_speed_margin_px_s must be >= 0")
+        if float(hogging.overtake_confirm_seconds) < 0:
+            raise ConfigError("hogging.overtake_confirm_seconds must be >= 0")
+        if not isinstance(hogging.overtake_stint_memory, bool):
+            raise ConfigError("hogging.overtake_stint_memory must be a boolean")
         rule_names: set[str] = set()
         lane_roles = {lane.role for lane in self.lanes}
         for position, rule in enumerate(hogging.rules):
@@ -243,8 +284,14 @@ class AppConfig:
             ):
                 if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
                     raise ConfigError(f"{label}.{key} must be a list of strings")
-            if not rule.lanes and not rule.lane_roles:
-                raise ConfigError(f"{label} must select at least one of lanes or lane_roles")
+            if not isinstance(rule.lane_indices, list) or any(
+                not isinstance(value, int) or value < 1 for value in rule.lane_indices
+            ):
+                raise ConfigError(f"{label}.lane_indices must be a list of positive integers")
+            if not rule.lanes and not rule.lane_roles and not rule.lane_indices:
+                raise ConfigError(
+                    f"{label} must select at least one of lanes, lane_roles, or lane_indices"
+                )
             unknown_lanes = sorted(set(rule.lanes) - seen_names)
             if unknown_lanes:
                 raise ConfigError(f"{label}.lanes references unknown lane(s): {', '.join(unknown_lanes)}")
@@ -402,6 +449,21 @@ def _rules(data: Any) -> list[HoggingRuleConfig]:
                 kwargs["min_dwell_seconds"] = float(kwargs["min_dwell_seconds"])
             except (TypeError, ValueError) as exc:
                 raise ConfigError(f"{label}.min_dwell_seconds must be a number") from exc
+        if "lane_indices" in kwargs and kwargs["lane_indices"] is not None:
+            raw = kwargs["lane_indices"]
+            if isinstance(raw, (int, str)):
+                raw = [raw]
+            if not isinstance(raw, (list, tuple)):
+                raise ConfigError(f"{label}.lane_indices must be a list of integers")
+            try:
+                kwargs["lane_indices"] = [int(entry) for entry in raw]
+            except (TypeError, ValueError) as exc:
+                raise ConfigError(f"{label}.lane_indices must be a list of integers") from exc
+        if "exempt_when_overtaking" in kwargs:
+            value = kwargs["exempt_when_overtaking"]
+            if isinstance(value, str):
+                value = value.strip().lower() not in {"false", "0", "no", "off"}
+            kwargs["exempt_when_overtaking"] = bool(value)
         if "severity" in kwargs:
             kwargs["severity"] = str(kwargs["severity"])
         rules.append(HoggingRuleConfig(**kwargs))
@@ -413,20 +475,48 @@ def _hogging(data: Any) -> HoggingConfig:
         return HoggingConfig()
     if not isinstance(data, dict):
         raise ConfigError("'hogging' must be a mapping")
-    allowed = {"enabled", "retrigger_after_seconds", "rules"}
+    allowed = {
+        "enabled",
+        "retrigger_after_seconds",
+        "evaluate_at",
+        "overtake_exemption",
+        "overtake_gap_fraction",
+        "overtake_gap_back_fraction",
+        "overtake_speed_margin_px_s",
+        "overtake_confirm_seconds",
+        "overtake_stint_memory",
+        "rules",
+    }
     unknown = sorted(set(data) - allowed)
     if unknown:
         raise ConfigError(f"Unknown key(s) in 'hogging': {', '.join(unknown)}")
     enabled = data.get("enabled", True)
     if isinstance(enabled, str):
         enabled = enabled.strip().lower() not in {"false", "0", "no", "off"}
+    exemption = data.get("overtake_exemption", True)
+    if isinstance(exemption, str):
+        exemption = exemption.strip().lower() not in {"false", "0", "no", "off"}
     try:
         retrigger = float(data.get("retrigger_after_seconds", 0.0))
+        gap_fraction = float(data.get("overtake_gap_fraction", 0.10))
+        gap_back_fraction = float(data.get("overtake_gap_back_fraction", 0.50))
+        speed_margin = float(data.get("overtake_speed_margin_px_s", 3.0))
+        confirm = float(data.get("overtake_confirm_seconds", 0.2))
+        stint_memory = data.get("overtake_stint_memory", True)
+        if isinstance(stint_memory, str):
+            stint_memory = stint_memory.strip().lower() not in {"false", "0", "no", "off"}
     except (TypeError, ValueError) as exc:
-        raise ConfigError("hogging.retrigger_after_seconds must be a number") from exc
+        raise ConfigError("hogging overtake settings must be numbers") from exc
     return HoggingConfig(
         enabled=bool(enabled),
         retrigger_after_seconds=retrigger,
+        evaluate_at=str(data.get("evaluate_at", "stint")),
+        overtake_exemption=bool(exemption),
+        overtake_gap_fraction=gap_fraction,
+        overtake_gap_back_fraction=gap_back_fraction,
+        overtake_speed_margin_px_s=speed_margin,
+        overtake_confirm_seconds=confirm,
+        overtake_stint_memory=bool(stint_memory),
         rules=_rules(data.get("rules")),
     )
 
@@ -527,7 +617,12 @@ def describe_config(config: AppConfig) -> str:
         ", ".join(rule.name for rule in config.hogging.rules) if config.hogging.rules else "(none)"
     )
     anchor_summary = config.occupancy.anchor
-    if config.occupancy.anchor_shift_enabled:
+    if config.occupancy.assignment == "bbox_vote":
+        anchor_summary = (
+            f"bbox_vote ({config.occupancy.bbox_vote_samples} bottom-edge samples, "
+            f"min share {config.occupancy.bbox_vote_min_share:.2f})"
+        )
+    elif config.occupancy.anchor_shift_enabled:
         anchor_summary += (
             f" (adaptive: <= {config.occupancy.anchor_shift_small_bbox_px:.0f}px centre,"
             f" >= {config.occupancy.anchor_shift_large_bbox_px:.0f}px outer corner)"

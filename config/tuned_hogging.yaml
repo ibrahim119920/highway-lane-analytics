@@ -1,0 +1,268 @@
+camera_id: tj_priok_km58_400b
+base_timestamp: '2026-11-07T23:15:38'
+model:
+  weights: yolo11n.pt
+  device: cpu
+  imgsz: 960
+  conf: 0.3
+  iou: 0.5
+  tracker: bytetrack.yaml
+  classes:
+  - 2
+  - 5
+  - 7
+video:
+  path: data/raw/km58_400B_tj_priok_20261107_161545.mp4
+  frame_stride: 1
+  max_frames: null
+  output_fps: null
+lanes:
+- name: nb_lane_1
+  index: 1
+  direction: northbound
+  role: normal
+  polygon:
+  - - 0.0
+    - 0.7658
+  - - 0.1576
+    - 0.61896
+  - - 0.26709
+    - 0.51766
+  - - 0.35983
+    - 0.43587
+  - - 0.43305
+    - 0.37175
+  - - 0.45119
+    - 0.37175
+  - - 0.3947
+    - 0.43773
+  - - 0.32845
+    - 0.5158
+  - - 0.2629
+    - 0.59387
+  - - 0.15411
+    - 0.72491
+  - - 0.0
+    - 0.92565
+- name: nb_lane_2
+  index: 2
+  direction: northbound
+  role: normal
+  polygon:
+  - - 0.0
+    - 0.92565
+  - - 0.0
+    - 1.0
+  - - 0.13738
+    - 1.0
+  - - 0.27406
+    - 0.73141
+  - - 0.35704
+    - 0.57063
+  - - 0.40028
+    - 0.49349
+  - - 0.42957
+    - 0.44145
+  - - 0.46792
+    - 0.37175
+  - - 0.45119
+    - 0.37175
+  - - 0.3947
+    - 0.43773
+  - - 0.32845
+    - 0.5158
+  - - 0.2629
+    - 0.59387
+  - - 0.15411
+    - 0.72491
+- name: nb_lane_3
+  index: 3
+  direction: northbound
+  role: overtaking
+  polygon:
+  - - 0.13738
+    - 1.0
+  - - 0.27406
+    - 0.73141
+  - - 0.35704
+    - 0.57063
+  - - 0.40028
+    - 0.49349
+  - - 0.42957
+    - 0.44145
+  - - 0.46792
+    - 0.37175
+  - - 0.48605
+    - 0.37175
+  - - 0.4749
+    - 0.43494
+  - - 0.46304
+    - 0.4842
+  - - 0.4477
+    - 0.56041
+  - - 0.42469
+    - 0.68866
+  - - 0.37308
+    - 1.0
+- name: sb_lane_1
+  index: 1
+  direction: southbound
+  role: normal
+  polygon:
+  - - 1.0
+    - 0.68587
+  - - 0.77336
+    - 0.51952
+  - - 0.72385
+    - 0.48513
+  - - 0.6855
+    - 0.45911
+  - - 0.62762
+    - 0.41729
+  - - 0.55997
+    - 0.37175
+  - - 0.53975
+    - 0.37175
+  - - 0.60948
+    - 0.44145
+  - - 0.69944
+    - 0.52695
+  - - 0.78452
+    - 0.61059
+  - - 0.88633
+    - 0.71561
+  - - 1.0
+    - 0.829
+- name: sb_lane_2
+  index: 2
+  direction: southbound
+  role: normal
+  polygon:
+  - - 1.0
+    - 0.829
+  - - 1.0
+    - 1.0
+  - - 0.92678
+    - 1.0
+  - - 0.77127
+    - 0.75743
+  - - 0.68061
+    - 0.6171
+  - - 0.61367
+    - 0.51394
+  - - 0.55858
+    - 0.43401
+  - - 0.51813
+    - 0.37175
+  - - 0.53975
+    - 0.37175
+  - - 0.60948
+    - 0.44145
+  - - 0.69944
+    - 0.52695
+  - - 0.78452
+    - 0.61059
+  - - 0.88633
+    - 0.71561
+- name: sb_lane_3
+  index: 3
+  direction: southbound
+  role: overtaking
+  polygon:
+  - - 0.92678
+    - 1.0
+  - - 0.77127
+    - 0.75743
+  - - 0.68061
+    - 0.6171
+  - - 0.61367
+    - 0.51394
+  - - 0.55858
+    - 0.43401
+  - - 0.51813
+    - 0.37175
+  - - 0.49861
+    - 0.37175
+  - - 0.51325
+    - 0.43866
+  - - 0.52999
+    - 0.50558
+  - - 0.55997
+    - 0.63197
+  - - 0.59414
+    - 0.77045
+  - - 0.64644
+    - 1.0
+occupancy:
+  anchor: bottom_center
+  assignment: bbox_vote
+  bbox_vote_samples: 5
+  bbox_vote_min_share: 0.5
+  restrict_to_direction: true
+  anchor_shift_enabled: true
+  anchor_shift_small_bbox_px: 90
+  anchor_shift_large_bbox_px: 250
+  direction_deadband_px: 2.0
+  direction_min_votes: 2
+  min_confidence: 0.3
+  min_lane_frames: 3
+  max_track_age_frames: 36
+  emit_lane_enter: true
+  emit_lane_exit: true
+  emit_lane_change: true
+hogging:
+  enabled: true
+  retrigger_after_seconds: 0.0
+  evaluate_at: stint
+  overtake_exemption: true
+  overtake_gap_fraction: 0.1
+  overtake_gap_back_fraction: 0.25
+  overtake_speed_margin_px_s: 1.0
+  overtake_confirm_seconds: 0.0
+  overtake_stint_memory: true
+  rules:
+  - name: heavy_cruising_lane_2_3
+    lanes: []
+    lane_roles: []
+    lane_indices:
+    - 2
+    - 3
+    classes:
+    - truck
+    - bus
+    min_dwell_seconds: 0.4
+    exempt_when_overtaking: true
+    severity: high
+    description: Truk/bus cruising di lajur 2/3 tanpa sedang mendahului.
+  - name: car_cruising_lane_2_3
+    lanes: []
+    lane_roles: []
+    lane_indices:
+    - 2
+    - 3
+    classes:
+    - car
+    min_dwell_seconds: 0.4
+    exempt_when_overtaking: true
+    severity: medium
+    description: Mobil cruising di lajur 2/3 tanpa sedang mendahului.
+analytics:
+  interval_seconds: 60
+evidence:
+  enabled: true
+  event_types: []
+  before_seconds: 4.0
+  after_seconds: 4.0
+  snapshot_format: jpg
+  snapshot_quality: 92
+  clip_codec: libx264
+  clip_preset: veryfast
+  clip_crf: 23
+  max_clips: null
+  output_dir: null
+output:
+  dir: output
+  video: null
+  events: null
+  tracks: null
+  reports_dir: null

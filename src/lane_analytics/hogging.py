@@ -23,11 +23,16 @@ class HoggingRule:
     lane_roles: frozenset[str]
     classes: frozenset[str]
     min_dwell_seconds: float
+    lane_indices: frozenset[int] = frozenset()
+    exempt_when_overtaking: bool = False
     severity: str = "medium"
     description: str = ""
 
     def matches(self, lane: LaneRegion, object_class: str) -> bool:
-        lane_match = lane.name in self.lanes or lane.role in self.lane_roles
+        if lane.index is not None and lane.index in self.lane_indices:
+            lane_match = True
+        else:
+            lane_match = lane.name in self.lanes or lane.role in self.lane_roles
         if not lane_match:
             return False
         if self.classes and object_class not in self.classes:
@@ -53,8 +58,10 @@ def build_rules(configs: Iterable[HoggingRuleConfig]) -> list[HoggingRule]:
             name=config.name,
             lanes=frozenset(config.lanes),
             lane_roles=frozenset(config.lane_roles),
+            lane_indices=frozenset(config.lane_indices),
             classes=frozenset(config.classes),
             min_dwell_seconds=float(config.min_dwell_seconds),
+            exempt_when_overtaking=bool(config.exempt_when_overtaking),
             severity=config.severity,
             description=config.description,
         )

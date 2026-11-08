@@ -1,4 +1,4 @@
-"""Command line interface: analyze, preview-lanes, summarize, evidence, demo, record, replay, doctor."""
+"""Command line interface: analyze, preview-lanes, summarize, evidence, tune, demo, record, replay, doctor."""
 
 from __future__ import annotations
 
@@ -34,6 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--output-video", help="override the annotated video path")
     analyze.add_argument("--events", help="override the JSONL events path")
     analyze.add_argument("--tracks", help="override the JSONL track-summary path")
+    analyze.add_argument(
+        "--frame-log",
+        help="write per-frame detections to this JSONL (used by 'tune')",
+    )
     analyze.add_argument("--reports-dir", help="override the reports directory")
     analyze.add_argument("--run-id", help="stable run identifier used in output filenames")
     analyze.add_argument("--camera-id", help="override camera_id")
@@ -131,6 +135,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evidence.add_argument(
         "--no-ffmpeg", action="store_true", help="use OpenCV instead of ffmpeg for clips"
+    )
+
+    tune = subparsers.add_parser(
+        "tune",
+        help="fit lane-hogging thresholds against a manual ground-truth label sheet",
+    )
+    tune.add_argument("--config", default="config/config.yaml")
+    tune.add_argument(
+        "--labels",
+        default="data/labels/lane_hogging_10m.csv",
+        help="ground-truth CSV (vehicle_key,track_id,direction,object_class,lane_index,hogging)",
+    )
+    tune.add_argument(
+        "--frame-log",
+        help="per-frame detections JSONL from 'analyze --frame-log' (exact replay)",
+    )
+    tune.add_argument(
+        "--tracks",
+        help="track-summary JSONL from a run (fast overlap-proxy replay)",
+    )
+    tune.add_argument("--out", default="output/tuning", help="report/output directory")
+    tune.add_argument("--width", type=int, default=1024, help="frame width for replay")
+    tune.add_argument("--height", type=int, default=768, help="frame height for replay")
+    tune.add_argument(
+        "--apply",
+        metavar="PATH",
+        help="write the tuned configuration to this YAML path",
     )
 
     demo = subparsers.add_parser(
@@ -607,6 +638,10 @@ def main(argv: list[str] | None = None) -> int:
                 "run_id": args.run_id,
                 "start_frame": args.start_frame or 0,
             }
+            if args.frame_log:
+                if args.workers > 1:
+                    raise ValueError("--frame-log is only supported with --workers 1")
+                run_kwargs["frame_log_path"] = args.frame_log
             if args.workers > 1:
                 from .parallel import process_video_parallel
 
@@ -629,6 +664,20 @@ def main(argv: list[str] | None = None) -> int:
                 result = process_video(config, **run_kwargs)
             _print_run_summary(result)
             return 0
+
+        if args.command == "tune":
+            from .tuning import run_tuning
+
+            return run_tuning(
+                config_path=args.config,
+                labels_path=args.labels,
+                frame_log_path=args.frame_log,
+                tracks_path=args.tracks,
+                out_dir=args.out,
+                apply_path=args.apply,
+                width=args.width,
+                height=args.height,
+            )
 
         if args.command == "preview-lanes":
             return _preview_lanes(args)

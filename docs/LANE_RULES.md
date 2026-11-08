@@ -63,31 +63,47 @@ The shipped profile targets the median-side lane of a left-hand-traffic carriage
 hogging:
   enabled: true
   retrigger_after_seconds: 0
+  evaluate_at: stint
+  overtake_exemption: true
+  overtake_gap_fraction: 0.10
+  overtake_gap_back_fraction: 0.25
+  overtake_speed_margin_px_s: 1.0
+  overtake_confirm_seconds: 0.0
+  overtake_stint_memory: true
   rules:
-    - name: heavy_vehicle_in_overtaking_lane
-      lane_roles: [overtaking]
+    - name: heavy_cruising_lane_2_3
+      lane_indices: [2, 3]
       classes: [truck, bus]
       min_dwell_seconds: 0.4
+      exempt_when_overtaking: true
       severity: high
-      description: "Truk/bus berada di lajur cepat (median) - indikasi pelanggaran lajur."
 
-    - name: prolonged_overtaking_lane
-      lane_roles: [overtaking]
+    - name: car_cruising_lane_2_3
+      lane_indices: [2, 3]
       classes: [car]
-      min_dwell_seconds: 2.0
+      min_dwell_seconds: 0.4
+      exempt_when_overtaking: true
       severity: medium
-      description: "Mobil bertahan di lajur cepat (median) hampir sepanjang lintasan pandang."
 ```
 
 What this means for the shipped camera:
 
-- A truck or bus in the overtaking lane for 0.4 continuous seconds → `high` indication.
-- A car in the overtaking lane for 2.0 continuous seconds → `medium` indication.
-- Any vehicle in `nb_lane_1`/`nb_lane_2` or `sb_lane_1`/`sb_lane_2` → no indication from
-  these rules.
+- A truck or bus *cruising* in lane 2 or 3 for 0.4 continuous seconds → `high` indication.
+- A car *cruising* in lane 2 or 3 for 0.4 continuous seconds → `medium` indication.
+- A vehicle that is passing a slower vehicle in the adjacent inner lane → no indication,
+  regardless of dwell time.
+- Lane 1 is never flagged by these rules.
+
+**Why lane 2 and why the overtake exemption.** The manual label sheet for the 10-minute
+KM 58+400 clip (`data/labels/`) marks trucks that cruise in lane 2 as hoggers and cars
+that cruise in lane 3 as hoggers, but marks every vehicle that is *actively overtaking*
+as allowed — including a lane-2 truck passing a slow lane-1 vehicle. Dwell does not
+separate the two groups (reviewed hoggers: 0.7-8.6 s; reviewed overtakers: 1.1-5.3 s), so
+the rule uses context instead of a longer clock.
 
 > These thresholds are deliberately small because the camera is short-baseline; see
-> [Visibility window](#visibility-window-matters-more-than-the-clock) below.
+> [Visibility window](#visibility-window-matters-more-than-the-clock) below. Run
+> `lane-analytics tune` against the label sheet before changing them.
 
 ### Restriction examples
 
@@ -161,6 +177,11 @@ A reasonable calibration process:
 3. Look at the dwell distribution for each lane × class.
 4. Set the threshold above normal usage but below the behaviour you want to flag.
 5. Re-run and review `hogging_events.csv` against the video.
+6. If a reviewed label sheet exists (see `data/labels/`), fit the thresholds instead of
+   guessing: `lane-analytics tune --tracks <run>/tracks/<id>.jsonl --labels <sheet>.csv
+   --out output/tuning --apply config/tuned_hogging.yaml`. The command reports
+   precision/recall/F1 and the remaining misses; `--frame-log` replays per-frame
+   detections through the real tracker for an exact bbox/overtake evaluation.
 
 Example: if cars normally spend 3-8 seconds in the overtaking lane while passing, a
 threshold of 12 seconds flags only long occupancy. If trucks are not allowed at all, a

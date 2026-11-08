@@ -21,7 +21,7 @@ Each processed event is appended to `output/events/<run_id>.jsonl`:
 | `lane_enter` | A stable lane assignment starts. | `lane_name`, `lane_index`, `lane_role` |
 | `lane_exit` | A lane stint closes (change, stale track, or video end). | `lane_name`, `dwell_seconds` |
 | `lane_change` | A vehicle moves from one lane to another. | `previous_lane`, `lane_name`, `dwell_seconds` |
-| `lane_hogging_indication` | A configured rule threshold is met. | `rule_name`, `severity`, `dwell_seconds`, `message` |
+| `lane_hogging_indication` | A configured rule matches a closed lane stint (default `evaluate_at: stint`). | `rule_name`, `severity`, `dwell_seconds`, `message` |
 
 For a lane change, the order is `lane_exit` → `lane_change` → `lane_enter`, all at the
 same frame/timestamp.
@@ -54,7 +54,7 @@ same frame/timestamp.
 | `lane_index` | integer or null | no | Configured lane index, scoped per direction (`lane_name` is the unique key). |
 | `lane_role` | string | no | Configured role, e.g. `normal`, `overtaking`. |
 | `previous_lane` | string | no | Old lane for `lane_change` and `lane_enter` after a change. |
-| `dwell_seconds` | number | no | Continuous time in the lane at the event. For `lane_exit`/`lane_change`, the old stint duration. |
+| `dwell_seconds` | number | no | Continuous time in the lane at the event. For `lane_exit`/`lane_change`/`lane_hogging_indication`, the closed stint duration. |
 | `class_id` | integer | no | COCO class id (`2` car, `5` bus, `7` truck). |
 | `frame_index` | integer | no | Source frame index (not processed-frame index). |
 | `video_time_s` | number | no | Source video time: `frame_index / source_fps`. |

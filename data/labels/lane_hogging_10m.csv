@@ -1,0 +1,60 @@
+vehicle_key,track_id,direction,object_class,lane_index,hogging,reason
+31,31,southbound,truck,2,false,Ada kendaraan lambat di lane 1
+119,119,southbound,truck,2,true,Cruising di lane 2
+154,154,southbound,truck,2,true,Cruising di lane 2
+170,170,southbound,car,3,true,Cruising di lane 3
+222,222,southbound,truck,2,true,Cruising di lane 2
+252,252,southbound,truck,2,true,Cruising di lane 2
+369,369,southbound,truck,2,true,Cruising di lane 2
+401,401,southbound,car,3,true,Cruising di lane 3
+414,414,southbound,truck,2,true,Cruising di lane 2
+578/557,578,southbound,truck,2,true,"Cruising di lane 2 (satu kendaraan, 2 track ID)"
+578/557,557,southbound,truck,2,true,"Cruising di lane 2 (satu kendaraan, 2 track ID)"
+588,588,southbound,car,3,true,Cruising di lane 3
+605,605,southbound,truck,2,true,Cruising di lane 2
+638,638,southbound,car,3,false,Sedang overtake #636
+902,902,southbound,car,3,false,Sedang overtake #903
+978,978,southbound,car,3,true,Cruising di lane 3
+998,998,southbound,car,3,false,Sedang overtake #996
+1020,1020,southbound,truck,2,true,Cruising di lane 2
+1004/1043,1004,southbound,truck,2,true,"Cruising di lane 2 (satu kendaraan, 2 track ID)"
+1004/1043,1043,southbound,truck,2,true,"Cruising di lane 2 (satu kendaraan, 2 track ID)"
+1014,1014,southbound,car,3,false,Sedang overtake #1020
+1059,1059,southbound,car,3,false,Sedang overtake #1063
+1063,1063,southbound,bus,2,true,Cruising di lane 2
+1115,1115,southbound,car,3,false,Sedang overtake #1117
+1117,1117,southbound,bus,2,true,Cruising di lane 2
+1132,1132,southbound,car,3,false,Sedang overtake #1117
+1222,1222,southbound,car,3,true,Cruising di lane 3
+1302,1302,southbound,car,3,true,Cruising di lane 3
+1304,1304,southbound,car,3,true,Cruising di lane 3
+22,22,northbound,truck,2,true,Cruising di lane 2
+319,319,northbound,car,3,true,Cruising di lane 3
+349,349,northbound,car,3,true,Cruising di lane 3
+365,365,northbound,truck,2,true,Cruising di lane 2
+378,378,northbound,car,3,false,Sedang overtake #365
+389,389,northbound,car,3,true,Cruising di lane 3
+438,438,northbound,truck,2,true,Cruising di lane 2
+490,490,northbound,car,3,true,Cruising di lane 3
+495,495,northbound,truck,2,true,Cruising di lane 2
+542/565,542,northbound,car,3,true,"Cruising di lane 3 (satu kendaraan, 2 track ID)"
+542/565,565,northbound,car,3,true,"Cruising di lane 3 (satu kendaraan, 2 track ID)"
+582,582,northbound,truck,2,true,Cruising di lane 2
+609,609,northbound,car,3,false,Sedang overtake #582
+717,717,northbound,car,3,true,Cruising di lane 3
+786,786,northbound,car,3,true,Cruising di lane 3
+841,841,northbound,truck,2,true,Cruising di lane 2
+873,873,northbound,truck,2,true,Cruising di lane 2
+989,989,northbound,truck,2,true,Cruising di lane 2
+1015,1015,northbound,car,3,true,Cruising di lane 3
+1073,1073,northbound,car,3,false,Sedang overtake #1075
+1075,1075,northbound,truck,2,true,Cruising di lane 2
+1080,1080,northbound,truck,2,true,Cruising di lane 2
+1101,1101,northbound,truck,2,true,Cruising di lane 2
+1140,1140,northbound,car,3,true,Cruising di lane 3
+1150,1150,northbound,car,3,true,Cruising di lane 3
+1159,1159,northbound,car,3,true,Cruising di lane 3
+1174,1174,northbound,truck,2,false,Sedang overtake #1175
+1179,1179,northbound,car,3,false,Sedang overtake #1074
+1294,1294,northbound,car,3,true,Cruising di lane 3
+1311,1311,northbound,bus,2,true,Cruising di lane 2

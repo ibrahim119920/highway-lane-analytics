@@ -98,6 +98,12 @@ lanes:
 
 occupancy:
   anchor: bottom_center        # fallback point for small/unclassified boxes
+  # Use the full bottom edge of the bounding box for the lane decision: wide
+  # near-field boxes are sampled at several points and the majority lane wins.
+  assignment: bbox_vote
+  bbox_vote_samples: 5
+  bbox_vote_min_share: 0.5
+  restrict_to_direction: true
   anchor_shift_enabled: true   # wide near-field boxes slide to the outer bottom corner
   anchor_shift_small_bbox_px: 90    # no shift at or below this box width
   anchor_shift_large_bbox_px: 250   # full shift to the corner at or above this width
@@ -113,33 +119,45 @@ occupancy:
 # IMPORTANT - dwell windows for this camera.
 # The calibrated zone covers a few tens of metres per direction, so "dwell" means
 # "time observed inside the zone", not a long-horizon occupancy measurement.
-# Observed on the 5-minute sample (overtaking lanes):
-#   nb_lane_3 cars   : 0.56 - 3.00 s (median ~2.0)
-#   nb_lane_3 trucks : 0.22 - 0.44 s
-#   sb_lane_3 cars   : 0.33 - 2.78 s (median ~1.0)
-#   sb_lane_3 trucks : 0.33 - 0.45 s
-# Thresholds are set to flag the tail, not the majority: ~2 s means "occupied the
-# overtaking lane for most of the visible pass". Raise them for a longer-view camera.
+#
+# The manual labels (data/labels/lane_hogging_10m.csv, 56 reviewed vehicles) show
+# that dwell alone does not separate hogging from legitimate overtaking:
+# reviewed hoggers were observed for 0.7-8.6 s in lane 2/3, and overtaking
+# vehicles for 1.1-5.3 s. The separating signal is *context*: a vehicle that is
+# passing a slower vehicle in the adjacent inner lane is not a hogger.
+#   - `overtake_exemption` compares the ego bottom point with the bottom point of
+#     every vehicle in lane index-1 (ahead within a gap, slower by a margin).
+#   - Dwell stays low (0.4 s) so heavy vehicles that cross the zone quickly are
+#     still caught; the overtake context suppresses the false positives.
 hogging:
   enabled: true
   retrigger_after_seconds: 0   # 0 = one indication per (track, lane stint, rule)
+  evaluate_at: stint           # decide when the lane stint ends (whole pass visible)
+  overtake_exemption: true
+  overtake_gap_fraction: 0.10  # max longitudinal gap, fraction of frame height
+  overtake_gap_back_fraction: 0.25  # accept a just-passed vehicle slightly behind
+  overtake_speed_margin_px_s: 1.0
+  overtake_confirm_seconds: 0.0
+  overtake_stint_memory: true  # a confirmed pass exempts the whole lane stint
   rules:
-    # Heavy vehicles should not use the median-side (overtaking) lane at all.
-    # 0.4 s = about 4 processed frames; it avoids 1-2 frame boundary flicker.
-    - name: heavy_vehicle_in_overtaking_lane
-      lane_roles: [overtaking]
+    # Trucks/buses belong in lane 1; lane 2/3 cruising is an indication unless
+    # they are actively passing a slower lane-1/lane-2 vehicle.
+    - name: heavy_cruising_lane_2_3
+      lane_indices: [2, 3]
       classes: [truck, bus]
       min_dwell_seconds: 0.4
+      exempt_when_overtaking: true
       severity: high
-      description: "Truk/bus berada di lajur cepat (median) - indikasi pelanggaran lajur."
+      description: "Truk/bus cruising di lajur 2/3 tanpa sedang mendahului."
 
-    # A car that stays in the overtaking lane for most of the visible pass.
-    - name: prolonged_overtaking_lane
-      lane_roles: [overtaking]
+    # A car that stays in lane 2/3 without an overtake target.
+    - name: car_cruising_lane_2_3
+      lane_indices: [2, 3]
       classes: [car]
-      min_dwell_seconds: 2.0
+      min_dwell_seconds: 0.4
+      exempt_when_overtaking: true
       severity: medium
-      description: "Mobil bertahan di lajur cepat (median) hampir sepanjang lintasan pandang."
+      description: "Mobil cruising di lajur 2/3 tanpa sedang mendahului."
 
 analytics:
   interval_seconds: 60         # time bucket for event timeseries

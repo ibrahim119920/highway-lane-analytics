@@ -303,7 +303,11 @@ ratio as the recording; only the normalized values are stored.
 ```yaml
 occupancy:
   anchor: bottom_center             # fallback: center | bottom_center | bottom_left | ...
-  anchor_shift_enabled: true        # slide wide near-field boxes to the outer corner
+  assignment: bbox_vote             # anchor | bbox_vote
+  bbox_vote_samples: 5              # points sampled along the bottom edge
+  bbox_vote_min_share: 0.5          # below this share, fall back to the anchor
+  restrict_to_direction: true       # only vote among lanes of the locked direction
+  anchor_shift_enabled: true        # fallback: slide wide near-field boxes to the outer corner
   anchor_shift_small_bbox_px: 90    # no shift at or below this box width
   anchor_shift_large_bbox_px: 250   # full shift at or above this width
   direction_deadband_px: 2.0        # vertical motion needed to count as a direction vote
@@ -316,13 +320,19 @@ occupancy:
   emit_lane_change: true
 ```
 
-`bottom_center` (the tyre/road contact point) is the safest default for perspective
-camera views. Use `center` for a straight top-down view.
+`bottom_center` (the tyre/road contact point) is the safest single-point default for
+perspective camera views. **`bbox_vote` uses the whole box instead of one point:** it
+samples `bbox_vote_samples` points along the bottom edge (10%-90% of the box width) and
+assigns the majority lane. This fixes wide near-field trucks whose bottom-centre lands
+on a painted divider. The vote is restricted to lanes of the direction the track is
+already travelling in (`restrict_to_direction`), which prevents a box near the median
+from flipping between carriageways. When no lane reaches `bbox_vote_min_share`, the
+tracker falls back to the single anchor, so a short calibration gap cannot drop a track.
 
-**Adaptive anchor for wide boxes.** With a high, oblique camera a near-field box can be
-wider than a lane, so its bottom-centre can land on the wrong side of a painted divider.
-When `anchor_shift_enabled` is on, the anchor slides from the bottom-centre toward the
-**outer bottom corner** as the box widens:
+**Adaptive anchor for wide boxes** (fallback path). With a high, oblique camera a
+near-field box can be wider than a lane, so its bottom-centre can land on the wrong side
+of a painted divider. When `anchor_shift_enabled` is on, the anchor slides from the
+bottom-centre toward the **outer bottom corner** as the box widens:
 
 - boxes in the **left half** of the frame slide toward the **bottom-left** corner,
 - boxes in the **right half** of the frame slide toward the **bottom-right** corner.
@@ -338,41 +348,108 @@ as a small white dot inside each box in the annotated video, so you can verify i
 hogging:
   enabled: true
   retrigger_after_seconds: 0   # 0 = one indication per (track, lane stint, rule)
+  evaluate_at: stint           # decide at lane exit, with the whole pass visible
+  overtake_exemption: true     # passing a slower inner-lane vehicle is allowed
+  overtake_gap_fraction: 0.10  # max longitudinal gap, fraction of frame height
+  overtake_gap_back_fraction: 0.25  # accept a just-passed vehicle slightly behind
+  overtake_speed_margin_px_s: 1.0
+  overtake_confirm_seconds: 0.0
+  overtake_stint_memory: true # a confirmed pass exempts the whole lane stint
   rules:
-    - name: heavy_vehicle_in_overtaking_lane
-      lane_roles: [overtaking]
+    - name: heavy_cruising_lane_2_3
+      lane_indices: [2, 3]
       classes: [truck, bus]
       min_dwell_seconds: 0.4
+      exempt_when_overtaking: true
       severity: high
-      description: "Truk/bus berada di lajur cepat (median) - indikasi pelanggaran lajur."
 
-    - name: prolonged_overtaking_lane
-      lane_roles: [overtaking]
+    - name: car_cruising_lane_2_3
+      lane_indices: [2, 3]
       classes: [car]
-      min_dwell_seconds: 2.0
+      min_dwell_seconds: 0.4
+      exempt_when_overtaking: true
       severity: medium
-      description: "Mobil bertahan di lajur cepat (median) hampir sepanjang lintasan pandang."
 ```
 
-**These thresholds are specific to this camera.** The analysis zone covers the visible
-stretch in each direction, so dwell ranges from ~0.1 s to ~7 s depending on lane and
-direction. On the five-minute sample the overtaking lanes measured:
+A rule selects lanes by `lanes`, `lane_roles`, or `lane_indices`, optionally filters
+classes, and triggers when a vehicle has stayed continuously in a matching lane for at
+least `min_dwell_seconds`. With `evaluate_at: stint` the decision is made at lane exit,
+so `dwell_seconds` is the final stint dwell. A rule that does not match is allowed usage.
 
-| lane | class | dwell range | median |
-| --- | --- | --- | --- |
-| `nb_lane_3` | car | 0.56-3.00 s | ~2.0 s |
-| `nb_lane_3` | truck | 0.22-0.44 s | 0.33 s |
-| `sb_lane_3` | car | 0.33-2.78 s | ~1.0 s |
-| `sb_lane_3` | truck | 0.33-0.45 s | 0.39 s |
+**Cruising vs overtaking.** Dwell alone does not separate the two in this camera: the
+calibrated zone is short, so reviewed hoggers were observed for 0.7-8.6 s in lane 2/3 and
+reviewed overtakers for 1.1-5.3 s. What separates them is context. When
+`overtake_exemption` is on, the tracker compares the ego bottom point with every vehicle
+in the adjacent inner lane (`lane_index - 1`, same direction) and exempts the ego when a
+vehicle is **ahead within `overtake_gap_fraction` of the frame height (or just passed,
+within `overtake_gap_back_fraction`) and slower by `overtake_speed_margin_px_s`** for at
+least `overtake_confirm_seconds`. That covers both
+lane 3 passing lane 2 and lane 2 passing a slow lane-1 vehicle (the `#31` case). With
+`overtake_stint_memory`, a confirmed pass keeps the rest of that lane stint exempt — a
+vehicle that completed an overtake is not re-flagged as a hogger moments later. The
+`overtaking` flag is exposed in `status_by_track()` and drawn in the annotated video.
 
-The 2.0 s car threshold therefore flags the tail (roughly the upper third of overtaking-lane
-passes), not the majority. A camera with a longer view needs proportionally larger
-thresholds. See [docs/LANE_RULES.md](docs/LANE_RULES.md) for the calibration procedure.
+Output is an **indication**, not a legal enforcement decision.
 
-Each rule selects lanes by `lanes` **or** `lane_roles`, optionally filters classes, and
-triggers once a vehicle has stayed continuously in a matching lane for at least
-`min_dwell_seconds`. A rule that does not match is allowed usage. The output is an
-**indication**, not a legal enforcement decision.
+### Tuning against manual labels
+
+The manual label sheet lives at `data/labels/`:
+
+| File | Purpose |
+| --- | --- |
+| `ground_truth_lane_hogging_10m.md` | human-readable sheet (track, class, lane, hogging, reason) |
+| `lane_hogging_10m.csv` | machine-readable; one row per track id, split ids share `vehicle_key` |
+
+Run the tuner against the trace of the run that produced those ids:
+
+```bash
+# Fast mode: per-track lane stints from a completed run (overlap proxy for overtake)
+lane-analytics tune \
+  --tracks output/source_video_annotated_10m/tracks/source_video.jsonl \
+  --labels data/labels/lane_hogging_10m.csv \
+  --out output/tuning --apply config/tuned_hogging.yaml
+
+# Exact mode: replay per-frame detections through the real tracker.
+# Track ids differ between GPU and CPU runs, so match the labels to the replay
+# run by time+lane first (see output/tuning/labels_cpu_run.csv).
+lane-analytics analyze ... --frame-log output/tuning/frame_log_10m.jsonl --no-video --no-reports
+lane-analytics tune --frame-log output/tuning/frame_log_10m.jsonl \
+  --labels output/tuning/labels_cpu_run.csv --out output/tuning/frame_log
+```
+
+Both modes print precision/recall/F1, write `tuning_report.md`, `best_params.json`, and
+`predictions.csv`, and `--apply` writes a complete tuned YAML profile. Labels that never
+appear in the run trace are reported as excluded rather than counted as misses.
+
+Results on the 10-minute KM 58+400 sheet:
+
+| Evaluation | Vehicles | TP | FP | FN | Precision | Recall | F1 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Original run (lane 3 only rules) | 56 | 19 | 9 | 24 | 0.679 | 0.442 | 0.535 |
+| Tuned, stint-stint proxy | 56 | 42 | 5 | 1 | 0.894 | 0.977 | 0.933 |
+| Tuned, per-frame bbox replay | 49 | 36 | 6 | 0 | 0.857 | 1.000 | 0.923 |
+
+The proxy mode scores the run that produced the labels. The exact mode requires a local
+frame log; because CPU and GPU inference assign different track ids, the label sheet is
+matched to the local run by time + lane (`49/56` vehicles matched at IoU >= 0.5), and the
+remaining seven are excluded. Both evaluations agree within ~0.01 F1.
+
+Remaining misses are six short lane-3/lane-2 stints (1.1-2.7 s) where the overtaken
+vehicle was not detected in the adjacent lane during that stint. Per-frame replay resolves
+the cases where the partner is visible; a longer detection range would resolve the rest.
+
+Because the overtaking decision needs the whole pass, `evaluate_at: stint` emits
+`lane_hogging_indication` when the lane stint ends, and `dwell_seconds` is the final stint
+dwell. The live HUD still shows the candidate badge while the vehicle is in the lane.
+
+**Vehicle type detection.** Class is decided by a confidence-weighted vote over the whole
+track, not the latest frame, so a single low-confidence `bus`/`truck` frame cannot flip
+the rule. On the 56 labeled vehicles the tracker agrees with the manual class on 47/55
+(85.5%); the eight mismatches are truck/bus and car/truck confusions in the small YOLO
+backbone. The rule uses the class only for severity (heavy = high, car = medium), so a
+class flip does not change whether a vehicle is flagged.
+
+See [docs/LANE_RULES.md](docs/LANE_RULES.md) for the original calibration procedure.
 
 ### CPU settings
 
@@ -436,7 +513,7 @@ annotated clip for every event. Events that share a frame (the `lane_exit` →
   "video_time_s": 6.687,
   "frame_index": 120,
   "severity": "medium",
-  "rule_name": "prolonged_overtaking_lane",
+  "rule_name": "car_cruising_lane_2_3",
   "snapshot": "snapshots/snap_000120.jpg",
   "clip": "clips/clip_000120.mp4",
   "clip_start_s": 2.687,
@@ -495,8 +572,8 @@ A lane-hogging event (real output from the sample clip):
   "frame_index": 1776,
   "video_time_s": 98.656,
   "severity": "high",
-  "rule_name": "heavy_vehicle_in_overtaking_lane",
-  "message": "Truk/bus berada di lajur cepat (median) - indikasi pelanggaran lajur.",
+  "rule_name": "heavy_cruising_lane_2_3",
+  "message": "Truk/bus cruising di lajur 2/3 tanpa sedang mendahului.",
   "schema_version": "1.0",
   "event_id": "ffb9d1f85d814b99894e6e02dbc4842d"
 }
@@ -542,6 +619,7 @@ This repository only sends; it has no receiver, Kafka client, pipeline, or dashb
 | `lane-analytics demo` | Generate and process a synthetic multi-lane scene offline. |
 | `lane-analytics summarize <events.jsonl>` | Rebuild reports from existing JSONL. |
 | `lane-analytics evidence` | Build snapshots + clips for an existing run. |
+| `lane-analytics tune` | Fit hogging thresholds against the manual label sheet. |
 | `lane-analytics record` | Record a live HLS/HTTP stream for a fixed duration. |
 | `lane-analytics replay` | Replay precomputed events to the webhook (simulated live feed). |
 | `lane-analytics doctor` | Show dependency and environment status. |
@@ -569,6 +647,7 @@ highway-lane-occupancy/
 │   ├── detector.py             # YOLO + ByteTrack backend
 │   ├── lane_tracker.py         # occupancy, dwell, transitions, events
 │   ├── hogging.py              # configurable rule matching
+│   ├── tuning.py               # ground-truth threshold fitting and reports
 │   ├── annotator.py            # OpenCV rendering
 │   ├── analytics.py            # Pandas summaries and reports
 │   ├── pipeline.py             # orchestration

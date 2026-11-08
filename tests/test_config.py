@@ -58,6 +58,44 @@ def test_load_valid_config(tmp_path: Path):
     assert config.lanes[1].role == "overtaking"
     assert config.lanes[1].polygon[0] == (0.65, 0.1)
     assert config.occupancy.anchor == "bottom_center"
+
+
+def test_bbox_vote_and_lane_index_rule(tmp_path: Path):
+    text = VALID.replace(
+        "  min_lane_frames: 2",
+        "  min_lane_frames: 2\n  assignment: bbox_vote\n  bbox_vote_samples: 7",
+    ).replace(
+        "      lane_roles: [overtaking]",
+        "      lane_indices: [2]\n      exempt_when_overtaking: false",
+    )
+    config = load_config(write_config(tmp_path, text))
+    assert config.occupancy.assignment == "bbox_vote"
+    assert config.occupancy.bbox_vote_samples == 7
+    assert config.hogging.rules[0].lane_indices == [2]
+    assert config.hogging.rules[0].exempt_when_overtaking is False
+
+
+def test_invalid_assignment_rejected(tmp_path: Path):
+    text = VALID.replace(
+        "  min_lane_frames: 2", "  min_lane_frames: 2\n  assignment: grid"
+    )
+    with pytest.raises(ConfigError, match="occupancy.assignment"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_overtake_settings_parsed(tmp_path: Path):
+    text = VALID.replace(
+        "  retrigger_after_seconds: 0",
+        "  retrigger_after_seconds: 0\n  overtake_exemption: true\n  overtake_gap_fraction: 0.2",
+    )
+    if "retrigger_after_seconds" not in VALID:
+        text = VALID.replace(
+            "hogging:\n  enabled: true",
+            "hogging:\n  enabled: true\n  overtake_exemption: true\n  overtake_gap_fraction: 0.2",
+        )
+    config = load_config(write_config(tmp_path, text))
+    assert config.hogging.overtake_exemption is True
+    assert config.hogging.overtake_gap_fraction == pytest.approx(0.2)
     assert config.hogging.rules[0].severity == "high"
 
 
@@ -125,7 +163,7 @@ def test_missing_polygon_is_rejected(tmp_path: Path):
 
 def test_rule_must_select_lane_or_role(tmp_path: Path):
     text = VALID.replace("      lane_roles: [overtaking]\n", "")
-    with pytest.raises(ConfigError, match="at least one of lanes or lane_roles"):
+    with pytest.raises(ConfigError, match="at least one of lanes, lane_roles, or lane_indices"):
         load_config(write_config(tmp_path, text))
 
 

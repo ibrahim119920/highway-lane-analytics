@@ -220,15 +220,19 @@ dot. **PENDING** — can be drawn as SVG by the editor; no photo needed.
 
 | Rule | Applies to | Condition | Severity |
 | --- | --- | --- | --- |
-| `heavy_vehicle_in_overtaking_lane` | truck, bus | any dwell in an overtaking lane, 0.4 s guard | high |
-| `prolonged_overtaking_lane` | car | at least 2.0 s in an overtaking lane | medium |
+| `heavy_cruising_lane_2_3` | truck, bus | cruising in lane 2/3 (exempt while passing), 0.4 s guard | high |
+| `car_cruising_lane_2_3` | car | cruising in lane 2/3 (exempt while passing), 0.4 s guard | medium |
+
+"Passing" is decided from bbox position and relative speed: a slower vehicle in the
+adjacent inner lane, ahead within 10% of the frame height, exempts the ego vehicle.
 
 **Body (copy, ~60 words):**
 
-> Rules are configuration, not code. Each rule selects lane roles, vehicle classes, a
-> minimum dwell time, and a severity. A vehicle that does not match a rule is still
-> tracked and reported as allowed usage. This keeps "observed" and "flagged" separate,
-> which is the distinction a real operations team would need.
+> Rules are configuration, not code. Each rule selects lane names, roles, or indices, a
+> vehicle class, a minimum dwell time, and a severity. Overtaking context is evaluated
+> separately, so a truck passing a slower vehicle is not flagged. A vehicle that does not
+> match a rule is still tracked and reported as allowed usage. This keeps "observed" and
+> "flagged" separate, which is the distinction a real operations team would need.
 
 ---
 
