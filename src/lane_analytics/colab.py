@@ -393,6 +393,7 @@ def activate(
     gap_seconds: float = 0.0,
     retries: int = 5,
     dry_run: bool = False,
+    skip_health_check: bool = False,
 ) -> ActivationResult:
     """Prepare footage, run the batch pipeline, and replay it to the webhook.
 
@@ -512,6 +513,7 @@ def activate(
                     window_seconds=window_seconds,
                     retries=retries,
                     dry_run=dry_run,
+                    skip_health_check=skip_health_check,
                 )
                 item["replay"] = replay_result.as_dict()
             item["status"] = "ok"
