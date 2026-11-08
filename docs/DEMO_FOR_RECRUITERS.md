@@ -48,18 +48,16 @@ Jangan menganggap "tidak muncul" berarti gagal: cek `GET /stats` dulu.
 1. Buka Kaggle -> **Create -> Notebook -> File -> Import Notebook -> GitHub**.
 2. Masukkan URL:
    `https://github.com/ibrahim119920/highway-lane-analytics/blob/master/notebooks/demo_recruiter.ipynb`
-3. Di cell **2. Settings**, isi:
-   - `PIPELINE_TOKEN = "<token>"` (lihat catatan keamanan di bawah),
-   - `REPLAY = True` bila ingin hasil recruiter muncul di dashboard,
-   - biarkan `REPLAY = False` bila hanya ingin demo lokal.
+3. Cell **2. Settings** sudah berisi `PIPELINE_TOKEN` produksi dan `REPLAY = True`.
+   Ganti ke `REPLAY = False` hanya bila ingin demo lokal tanpa upload.
 4. **Save Version -> Save & Run All**, lalu **Share -> Public**.
 5. Salin link notebook, mis. `https://www.kaggle.com/code/<user>/<slug>`, dan tempel
    di CV/LinkedIn/portfolio.
 
 > Kaggle Secrets tidak bisa dipakai recruiter karena secret terikat ke akun pemilik.
-> Karena itu token ditulis di cell notebook. Ini **sengaja** mengorbankan keamanan:
-> siapa pun yang membuka notebook bisa mengirim run. Ganti token di server bila
-> disalahgunakan.
+> Karena itu token ditulis langsung di cell notebook. Ini **sengaja** mengorbankan
+> keamanan: siapa pun yang membuka notebook bisa mengirim run. Ganti token di server
+> bila disalahgunakan, lalu perbarui notebook.
 
 ### 0.3 Bagikan link Colab (opsional)
 
@@ -113,9 +111,10 @@ Colab, mereka harus menyalin notebook dan mengisi token sendiri.
 
 1. Buka badge/link Colab.
 2. **Runtime -> Run all**.
-3. Notebook berjalan lokal (`REPLAY=False`) dan menampilkan video + tabel.
-4. Ingin upload? **File -> Save a copy in Drive**, isi `PIPELINE_TOKEN` di cell 2,
-   set `REPLAY=True`, lalu jalankan ulang.
+3. Notebook berjalan dan upload otomatis (`REPLAY = True`) karena token sudah ada di
+   cell settings; video + tabel tampil di akhir.
+4. Ingin demo lokal tanpa upload? Ubah `REPLAY = False` di cell **2. Settings**, lalu
+   **Runtime -> Run all** lagi.
 
 ---
 
