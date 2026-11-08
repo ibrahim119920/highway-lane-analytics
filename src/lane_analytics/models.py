@@ -51,8 +51,8 @@ class TrackedObject:
 
     def directional_anchor(
         self,
-        direction: str,
         *,
+        frame_width: float,
         small_px: float,
         large_px: float,
         fallback: str = "bottom_center",
@@ -60,20 +60,19 @@ class TrackedObject:
         """Bottom anchor that slides to the outer bottom corner for wide boxes.
 
         Near-field boxes are wide because of perspective and their bottom-centre can
-        land on the wrong side of a painted divider. ``northbound`` traffic slides
-        toward its bottom-left corner and ``southbound`` toward its bottom-right
-        corner (the outer edge, away from the median). The slide is linear between
-        ``small_px`` (no shift) and ``large_px`` (full shift to the corner).
+        land on the wrong side of a painted divider. Boxes in the left half of the
+        frame slide toward their bottom-left corner; boxes in the right half slide
+        toward their bottom-right corner (the outer edge, away from the median).
+        The slide is linear between ``small_px`` (no shift) and ``large_px`` (full
+        shift to the corner).
 
-        Unknown directions fall back to ``anchor(fallback)``.
+        A non-positive ``frame_width`` falls back to ``anchor(fallback)``.
         """
         x1, y1, x2, y2 = self.bbox
-        if direction == "northbound":
-            edge_x = x1
-        elif direction == "southbound":
-            edge_x = x2
-        else:
+        if frame_width <= 0:
             return self.anchor(fallback)
+        center_x = (x1 + x2) / 2.0
+        edge_x = x1 if center_x < frame_width / 2.0 else x2
 
         span = float(large_px) - float(small_px)
         width = self.width
@@ -83,7 +82,6 @@ class TrackedObject:
             weight = (width - float(small_px)) / span
         weight = min(1.0, max(0.0, weight))
 
-        center_x = (x1 + x2) / 2.0
         return (center_x + (edge_x - center_x) * weight, y2)
 
     def as_int_bbox(self) -> tuple[int, int, int, int]:

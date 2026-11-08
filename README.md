@@ -265,15 +265,13 @@ wider than a lane, so its bottom-centre can land on the wrong side of a painted 
 When `anchor_shift_enabled` is on, the anchor slides from the bottom-centre toward the
 **outer bottom corner** as the box widens:
 
-- northbound (receding) traffic slides toward the **bottom-left** corner,
-- southbound (approaching) traffic slides toward the **bottom-right** corner.
+- boxes in the **left half** of the frame slide toward the **bottom-left** corner,
+- boxes in the **right half** of the frame slide toward the **bottom-right** corner.
 
-The direction comes from the track's vertical motion: receding vehicles move up
-(`y` decreasing), approaching vehicles move down. It is locked after
-`direction_min_votes` consistent observations, so a one-frame box jitter cannot flip it.
-The slide is linear between `anchor_shift_small_bbox_px` and
-`anchor_shift_large_bbox_px`. The anchor point is drawn as a small white dot inside each
-box in the annotated video, so you can verify it.
+The side is taken from the box centre, so it follows the carriageway the vehicle is on
+and does not depend on the direction vote. The slide is linear between
+`anchor_shift_small_bbox_px` and `anchor_shift_large_bbox_px`. The anchor point is drawn
+as a small white dot inside each box in the annotated video, so you can verify it.
 
 ### Lane-hogging rules
 

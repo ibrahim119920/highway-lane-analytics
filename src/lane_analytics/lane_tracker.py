@@ -237,9 +237,9 @@ class LaneTracker:
 
     # ------------------------------------------------------------- lane matching
     def _lane_for(self, obj: TrackedObject, state: _TrackState) -> LaneRegion | None:
-        if self._anchor_shift_enabled and state.direction:
+        if self._anchor_shift_enabled:
             anchor_x, anchor_y = obj.directional_anchor(
-                state.direction,
+                frame_width=self._frame_width,
                 small_px=self._anchor_shift_small,
                 large_px=self._anchor_shift_large,
                 fallback=self._anchor,

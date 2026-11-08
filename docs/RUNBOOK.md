@@ -87,7 +87,7 @@ Per-camera checks:
 - Do the polygons cover the road, not the shoulder or median?
 - Does the anchor stay inside the correct lane while a vehicle passes? The anchor is drawn
   as a small white dot in each box; for wide near-field boxes it should slide toward the
-  outer bottom corner (left for northbound, right for southbound).
+  outer bottom corner (left half of the frame to the left, right half to the right).
 - Are lane `role` values consistent with the hogging rules?
 - If traffic is reversed, update `direction` labels (they are informational).
 - How long is the observation window? Divide the zone length by typical speed and make

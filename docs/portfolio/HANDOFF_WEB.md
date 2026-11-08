@@ -177,10 +177,10 @@ camera, showing that normalized coordinates survive the resolution change.
 > centre produces lane flapping exactly where the scene is most reliable: the near field.
 >
 > The fix is an adaptive anchor. Small boxes use `bottom_center`. As box width grows past
-> 90 pixels, the anchor slides toward the outer bottom corner — bottom-left for northbound
-> traffic, bottom-right for southbound — reaching the corner at 250 pixels. The direction
-> is not hard-coded per frame: it is voted over consecutive frames with a small deadband,
-> so a single noisy detection cannot flip it.
+> 90 pixels, the anchor slides toward the outer bottom corner — bottom-left when the box
+> sits in the left half of the frame, bottom-right when it sits in the right half —
+> reaching the corner at 250 pixels. The side comes from the box centre, so it follows
+> the carriageway instead of relying on a direction vote.
 >
 > A second guard is hysteresis. A vehicle must be seen in a new lane for a minimum number
 > of frames before a lane change is emitted, which stops boundary flicker from creating

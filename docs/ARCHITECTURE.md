@@ -66,11 +66,11 @@ For each detection:
 
 1. Choose an anchor point from the bounding box:
    `center`, `bottom_center` (default), `bottom_left`, `bottom_right`, or `top_center`.
-2. Optionally apply the **adaptive anchor**: when `anchor_shift_enabled` is on and the
-   direction is known, a wide near-field box slides from the bottom-centre toward its
-   outer bottom corner (bottom-left for northbound, bottom-right for southbound). The
-   direction is derived from the vertical motion of the track and locked after
-   `direction_min_votes` consistent observations.
+2. Optionally apply the **adaptive anchor**: when `anchor_shift_enabled` is on, a wide
+   near-field box slides from the bottom-centre toward its outer bottom corner
+   (bottom-left when the box centre is in the left half of the frame, bottom-right in
+   the right half). The slide is linear between `anchor_shift_small_bbox_px` and
+   `anchor_shift_large_bbox_px`.
 3. Normalize the anchor by frame width/height.
 4. Test it against every lane polygon with ray casting.
 5. If more than one polygon contains the point, choose the smallest polygon by area.
