@@ -186,6 +186,24 @@ lane-analytics analyze --video data/raw/tj_priok_5min.mp4 `
 Each worker loads its own model on its own GPU; the final merge, annotated video, and
 reports still run once. Do not pass the same device twice.
 
+## Kaggle production simulation
+
+Use [`notebooks/kaggle_production.ipynb`](../notebooks/kaggle_production.ipynb) to run
+the batch pipeline on Kaggle and optionally replay it to the pipeline webhook. Two modes:
+
+1. **Live HLS** (`SOURCE_MODE = "live"`): record `RECORD_SECONDS` from
+   `LIVE_URL`, process single-pass, replay, repeat `LIVE_CYCLES` times. ffmpeg/ffprobe
+   must be on PATH (Kaggle includes them).
+2. **Drive video per window** (`SOURCE_MODE = "drive_video"`): download one long video,
+   then call `process_video(start_frame=..., frame_limit=WINDOW_SECONDS * fps)` for
+   every 30-second window and replay that window's events/tracks. `BASE_TIMESTAMP` is
+   required so timestamps stay on the video timeline.
+
+Add `WEBHOOK_URL`/`WEBHOOK_TOKEN` as Kaggle Secrets; `activate()` and `_secret()` read
+them automatically. Use `REPLAY=True, DRY_RUN=True` to write replay batches under
+`output/replay/<run_id>/` without HTTP, or `DRY_RUN=False` for a real webhook. Track IDs
+reset per window, so the receiver should key on `run_id` and dedupe by `event_id`.
+
 Compare a small window before committing:
 
 ```powershell

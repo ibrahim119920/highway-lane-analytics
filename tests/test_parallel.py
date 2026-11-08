@@ -313,6 +313,32 @@ def _test_config(video: Path, output: Path) -> AppConfig:
     )
 
 
+def test_process_video_frame_limit_processes_one_window(tmp_path: Path):
+    video = tmp_path / "clip.avi"
+    _write_test_clip(video)
+    config = _test_config(video, tmp_path / "out")
+
+    result = process_video(
+        config,
+        detector=_FakeDetector(),
+        video_path=video,
+        events_path=tmp_path / "events.jsonl",
+        tracks_path=tmp_path / "tracks.jsonl",
+        output_video=tmp_path / "window.avi",
+        write_video=False,
+        generate_reports=False,
+        run_id="window",
+        start_frame=5,
+        frame_limit=6,
+    )
+
+    assert result.start_frame == 5
+    assert result.frames_processed == 6
+    assert result.frames_read == 6
+    assert result.duration_s == pytest.approx(0.6)
+    assert all(event.video_time_s >= 0.5 for event in result.events)
+
+
 def test_process_video_writes_frame_log_and_replays_it(tmp_path: Path):
     video = tmp_path / "clip.avi"
     _write_test_clip(video)
