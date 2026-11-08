@@ -48,7 +48,8 @@ recognition" in metadata. They set the wrong expectation and are not what was bu
 | --- | --- | --- | --- |
 | vehicles tracked | events from a 5-minute clip | on CPU | automated tests |
 
-**Buttons:** `Read the case study` (anchor to overview) · `View the code` (repo link)
+**Buttons:** `Read the case study` (anchor to overview) · `View the code` (repo link) ·
+`Try the 55-second demo` (Colab) · `Live dashboard` (public Streamlit URL)
 
 **Hero media:** `assets/lane_mapping.jpg` — the calibrated six-lane overlay. It is the
 strongest single image because it explains the geometry instantly.

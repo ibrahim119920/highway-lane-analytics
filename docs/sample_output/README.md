@@ -6,6 +6,7 @@
 | --- | --- |
 | `km58_lane_mapping.jpg` | Six-lane calibration drawn from the CCTV point of view (coordinates in 1434x1076 space). |
 | `km58_lane_preview.jpg` | The same polygons rendered by `lane-analytics preview-lanes` on the 1024x768 video. |
+| `km58_sample_55s.mp4` | 55-second public sample from the calibrated camera, used by `notebooks/demo_recruiter.ipynb`. |
 | `km58_summary.md` | Report from the full 5-minute run (219 vehicles, 8 hogging indications). |
 | `km58_hogging_events.csv` | Rule-based indications from that run. |
 | `km58_lane_usage.csv` | Lane x class occupancy from that run. |
