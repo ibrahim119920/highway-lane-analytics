@@ -76,17 +76,20 @@ Colab, mereka harus menyalin notebook dan mengisi token sendiri.
 ## 1. Untuk recruiter - mencoba dashboard
 
 1. Buka <https://lane.syaifudin-fam.my.id>. Tidak perlu login.
-2. Halaman yang bisa dilihat:
+2. Dashboard sudah berisi run demo `demo_sample_55s` dari klip 55 detik:
+   27 kendaraan, 10 masuk lajur, 3 lane change, 2 hogging signal, status
+   `complete`.
+3. Halaman yang bisa dilihat:
    - **Overview** - jumlah kendaraan, kendaraan masuk lajur, lane change, indikasi
      hogging, lag ingest, timeline session/window.
-   - **Lane analysis** - heatmap lajur x jam, distribusi dwell per lajur/kelas,
+   - **Lane usage** - heatmap lajur x jam, distribusi dwell per lajur/kelas,
      tabel lane usage, matriks lane change.
-   - **Hogging explorer** - daftar event hogging, breakdown severity/rule, unduh CSV.
-   - **Run & data quality** - registry run, status complete/session/window, cek
+   - **Hogging signals** - daftar event hogging, breakdown severity/rule, unduh CSV.
+   - **Data quality** - registry run, status complete/session/window, cek
      duplikat/rentang/enter-exit, unduh CSV.
-3. Gunakan filter **sesi**, **run/window**, kamera, arah, lajur, kelas, severity,
+4. Gunakan filter **sesi**, **run/window**, kamera, arah, lajur, kelas, severity,
    dan rentang tanggal. Tombol **Refresh data** membersihkan cache.
-4. Kalau dashboard kosong, lihat bagian troubleshooting di bawah.
+5. Kalau dashboard kosong, lihat bagian troubleshooting di bawah.
 
 ## 2. Untuk recruiter - menjalankan Kaggle sendiri
 
