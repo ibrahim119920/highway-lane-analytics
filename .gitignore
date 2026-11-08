@@ -21,6 +21,9 @@ data/processed/*
 # Generated runs
 output/
 
+# Temporary local notebooks
+notebooks/*_tmp.ipynb
+
 # IDE / OS
 .vscode/
 .idea/
