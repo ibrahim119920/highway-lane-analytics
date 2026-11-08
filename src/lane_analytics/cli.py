@@ -1,4 +1,4 @@
-"""Command line interface: analyze, preview-lanes, summarize, demo, record, replay, doctor."""
+"""Command line interface: analyze, preview-lanes, summarize, evidence, demo, record, replay, doctor."""
 
 from __future__ import annotations
 
@@ -49,6 +49,16 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--conf", type=float, help="detection confidence threshold")
     analyze.add_argument("--no-video", action="store_true", help="skip annotated video rendering")
     analyze.add_argument("--no-reports", action="store_true", help="skip CSV/JSON/Markdown reports")
+    evidence_group = analyze.add_mutually_exclusive_group()
+    evidence_group.add_argument(
+        "--evidence", dest="evidence", action="store_true",
+        help="generate snapshot + clip evidence (overrides config)",
+    )
+    evidence_group.add_argument(
+        "--no-evidence", dest="evidence", action="store_false",
+        help="skip snapshot + clip evidence",
+    )
+    analyze.set_defaults(evidence=None)
 
     preview = subparsers.add_parser(
         "preview-lanes", help="draw the configured lane polygons on one video frame"
@@ -77,6 +87,29 @@ def build_parser() -> argparse.ArgumentParser:
     summarize.add_argument("--out", default="output/reports/summary", help="output directory")
     summarize.add_argument("--interval", type=int, default=60, help="time bucket in seconds")
     summarize.add_argument("--camera-id", help="override the camera id from the events")
+
+    evidence = subparsers.add_parser(
+        "evidence", help="build snapshot + clip evidence for an existing run"
+    )
+    evidence.add_argument("--run-id", required=True)
+    evidence.add_argument("--events", help="default output/events/<run_id>.jsonl")
+    evidence.add_argument("--video", help="default output/videos/<run_id>_annotated.mp4")
+    evidence.add_argument("--out", help="default output/evidence/<run_id>")
+    evidence.add_argument("--before", type=float, default=4.0, help="seconds before the event")
+    evidence.add_argument("--after", type=float, default=4.0, help="seconds after the event")
+    evidence.add_argument(
+        "--types", nargs="*", default=None, help="event types (default: all)"
+    )
+    evidence.add_argument("--max-clips", type=int, help="cap on unique clips")
+    evidence.add_argument(
+        "--time-offset",
+        type=float,
+        default=None,
+        help="source time of the first video frame (default: read from summary.json)",
+    )
+    evidence.add_argument(
+        "--no-ffmpeg", action="store_true", help="use OpenCV instead of ffmpeg for clips"
+    )
 
     demo = subparsers.add_parser(
         "demo", help="generate a synthetic multi-lane scene and run the whole pipeline offline"
@@ -169,6 +202,8 @@ def _apply_overrides(config, args: argparse.Namespace):
         config.model.imgsz = args.imgsz
     if args.conf is not None:
         config.model.conf = args.conf
+    if getattr(args, "evidence", None) is not None:
+        config.evidence.enabled = bool(args.evidence)
     config.validate()
     return config
 
@@ -205,6 +240,12 @@ def _print_run_summary(result: "RunResult") -> None:
     print(f"Tracks file  : {result.tracks_path}")
     if result.reports_dir:
         print(f"Reports      : {result.reports_dir}")
+    if result.evidence_dir:
+        print(
+            f"Evidence     : {result.evidence_events} events, "
+            f"{result.evidence_snapshots} snapshots, {result.evidence_clips} clips"
+        )
+        print(f"Evidence dir : {result.evidence_dir}")
     print()
     print("Note: lane hogging is a rule-based indication, not a legal determination.")
 
@@ -324,6 +365,79 @@ def _preview_lanes(args: argparse.Namespace) -> int:
             f"  {lane.name}: index={lane.index if lane.index is not None else '-'} "
             f"role={lane.role} polygon={coordinates}"
         )
+    return 0
+
+
+def _summary_time_offset(run_id: str) -> float:
+    """Source time of the first frame, read from reports/<run_id>/summary.json."""
+    import json
+
+    summary_path = Path("output") / "reports" / run_id / "summary.json"
+    if not summary_path.exists():
+        return 0.0
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        run = payload.get("run") or {}
+        fps = float(run.get("source_fps") or 0)
+        start = int(run.get("start_frame") or 0)
+    except Exception:
+        return 0.0
+    return start / fps if fps > 0 and start else 0.0
+
+
+def _evidence(args: argparse.Namespace) -> int:
+    from .evidence import EvidenceError, generate_evidence
+
+    run_id = args.run_id
+    events_path = Path(args.events) if args.events else Path("output/events") / f"{run_id}.jsonl"
+    video_path = (
+        Path(args.video) if args.video else Path("output/videos") / f"{run_id}_annotated.mp4"
+    )
+    output_dir = Path(args.out) if args.out else Path("output/evidence") / run_id
+
+    if not video_path.exists():
+        print(f"error: video not found: {video_path}", file=sys.stderr)
+        print(
+            "hint: pass --video, or rerun analyze with annotated video enabled.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        offset = (
+            float(args.time_offset)
+            if args.time_offset is not None
+            else _summary_time_offset(run_id)
+        )
+        result = generate_evidence(
+            run_id=run_id,
+            events_path=events_path,
+            video_path=video_path,
+            output_dir=output_dir,
+            event_types=args.types or [],
+            before_seconds=args.before,
+            after_seconds=args.after,
+            max_clips=args.max_clips,
+            time_offset_s=offset,
+            use_ffmpeg=not args.no_ffmpeg,
+        )
+    except EvidenceError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print()
+    print("Evidence summary")
+    print("----------------")
+    print(f"Run ID       : {result.run_id}")
+    print(f"Events       : {result.event_count} ({result.skipped_events} skipped)")
+    print(f"Snapshots    : {result.snapshot_count}")
+    print(f"Clips        : {result.clip_count}")
+    print(f"Elapsed      : {result.elapsed_s:.1f}s")
+    print(f"Index        : {result.index_path}")
+    if result.errors:
+        print(f"Warnings     : {len(result.errors)}")
+        for message in result.errors[:5]:
+            print(f"  - {message}")
     return 0
 
 
@@ -520,6 +634,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "record":
             return _record(args)
+
+        if args.command == "evidence":
+            return _evidence(args)
 
         if args.command == "replay":
             return _replay(args)

@@ -149,6 +149,14 @@ At the end of the run:
 - `summarize_events` builds lane usage, lane-change, hogging, and interval aggregates,
 - `write_reports` writes CSV, JSON, and Markdown artifacts.
 
+If `evidence.enabled` is true, `evidence.py` then cuts a snapshot and an 8-second clip
+(4 s before + 4 s after) around every event. Media is cut from the annotated video, so the
+snapshot and clip show the box, lane label, and hogging badge. Events that share a frame
+(`lane_exit` → `lane_change` → `lane_enter`) share one snapshot and one clip. The mapping is
+written to `output/evidence/<run_id>/index.json`. For runs started with `--start-frame`, the
+event's source time is converted to the annotated video's local time using
+`start_frame / source_fps`.
+
 ## Module map
 
 | Module | Responsibility |
@@ -161,6 +169,7 @@ At the end of the run:
 | `annotator.py` | Lane polygons, boxes, labels, HUD. |
 | `analytics.py` | Event/track aggregation and report writing. |
 | `pipeline.py` | Frame loop and artifact orchestration. |
+| `evidence.py` | Snapshot + 8-second clip evidence per event. |
 | `demo.py` | Synthetic scene and manifest detector. |
 | `recorder.py` | Chunked HLS/HTTP recording with ffmpeg. |
 | `replay.py` | Paced webhook sender for precomputed events/tracks/run metadata. |

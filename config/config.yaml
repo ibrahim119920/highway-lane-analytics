@@ -139,6 +139,21 @@ hogging:
 analytics:
   interval_seconds: 60         # time bucket for event timeseries
 
+# Snapshot + short-clip evidence for lane events. Generated automatically after a run.
+# Each event points to a JPEG snapshot and an 8-second MP4 clip centred on the event.
+evidence:
+  enabled: true
+  event_types: []          # [] = all events; e.g. [lane_change, lane_hogging_indication]
+  before_seconds: 4.0
+  after_seconds: 4.0       # 4 + 4 = 8-second clip
+  snapshot_format: jpg
+  snapshot_quality: 92
+  clip_codec: libx264
+  clip_preset: veryfast
+  clip_crf: 23
+  max_clips: null          # optional cap on unique clips per run
+  output_dir: null         # null = output/evidence/<run_id>
+
 output:
   dir: output
   video: null                  # null = output/videos/<run_id>_annotated.mp4

@@ -104,13 +104,15 @@ activate(
 )
 ```
 
-`activate` runs the normal batch pipeline (`analyze`) with `--no-video`, then replays each run:
-events per window → `/webhook`, tracks once → `/webhook/tracks`, and run metadata with
-`complete: true` → `/webhook/run`. The webhook receiver, Kafka, pipeline, and dashboard belong
-to the separate pipeline project; this repo only sends.
+`activate` runs the normal batch pipeline (`analyze`). Because evidence is enabled by default,
+it renders the annotated video so snapshots and clips show the detection boxes; pass
+`write_video=False` to skip rendering (evidence then uses the source video). After the batch it
+replays each run: events per window → `/webhook`, tracks once → `/webhook/tracks`, and run
+metadata with `complete: true` → `/webhook/run`. The webhook receiver, Kafka, pipeline, and
+dashboard belong to the separate pipeline project; this repo only sends.
 
 Useful parameters: `max_videos`, `device` (`"0"` on GPU), `imgsz`, `frame_stride`,
-`max_frames`, `base_timestamps={"clip01.mp4": "..."}`, `write_video=True`, `replay=False`,
+`max_frames`, `base_timestamps={"clip01.mp4": "..."}`, `write_video=False`, `replay=False`,
 `dry_run=True`.
 
 Colab already ships CUDA-enabled PyTorch, so do **not** install a CPU torch wheel there.
@@ -345,7 +347,70 @@ output/
     summary.json
     summary.md
     run_config.json
+  evidence/<run_id>/
+    index.json                 # event -> snapshot + clip mapping
+    snapshots/snap_*.jpg       # one frame at the event
+    clips/clip_*.mp4           # 8 s around the event (4 s before + 4 s after)
 ```
+
+### Evidence snapshots and clips
+
+When `evidence.enabled` is true (the default), each run also writes a snapshot and a short
+annotated clip for every event. Events that share a frame (the `lane_exit` →
+`lane_change` → `lane_enter` sequence) share one file, so nothing is duplicated.
+
+`evidence/index.json` maps every event to its media:
+
+```json
+{
+  "event_id": "...",
+  "event_type": "lane_hogging_indication",
+  "track_id": 2,
+  "object_class": "car",
+  "lane_name": "sb_lane_3",
+  "timestamp": "2026-11-08T06:58:12",
+  "video_time_s": 6.687,
+  "frame_index": 120,
+  "severity": "medium",
+  "rule_name": "prolonged_overtaking_lane",
+  "snapshot": "snapshots/snap_000120.jpg",
+  "clip": "clips/clip_000120.mp4",
+  "clip_start_s": 2.687,
+  "clip_end_s": 10.687,
+  "clip_duration_s": 8.0
+}
+```
+
+Paths are relative to `output/evidence/<run_id>/`. For a dashboard, prefix them with the media
+base URL (or serve that directory as static files). Snapshots and clips are cut from the
+annotated video, so they show the box, lane label, and hogging badge.
+
+Tune it in `config/config.yaml`:
+
+```yaml
+evidence:
+  enabled: true
+  event_types: []          # [] = all events; or [lane_change, lane_hogging_indication]
+  before_seconds: 4.0
+  after_seconds: 4.0
+  snapshot_format: jpg
+  snapshot_quality: 92
+  clip_codec: libx264
+  clip_preset: veryfast
+  clip_crf: 23
+  max_clips: null
+  output_dir: null         # default output/evidence/<run_id>
+```
+
+Backfill evidence for a run that was processed before this feature:
+
+```powershell
+lane-analytics evidence --run-id km58_20261108_065806
+```
+
+If the run used `--start-frame`, the command reads the offset from
+`reports/<run_id>/summary.json`; override it with `--time-offset` if needed. Disable evidence
+for one run with `lane-analytics analyze --no-evidence`.
 
 A lane-hogging event (real output from the sample clip):
 
@@ -412,6 +477,7 @@ This repository only sends; it has no receiver, Kafka client, pipeline, or dashb
 | `lane-analytics preview-lanes` | Draw configured lane polygons on one frame. |
 | `lane-analytics demo` | Generate and process a synthetic multi-lane scene offline. |
 | `lane-analytics summarize <events.jsonl>` | Rebuild reports from existing JSONL. |
+| `lane-analytics evidence` | Build snapshots + clips for an existing run. |
 | `lane-analytics record` | Record a live HLS/HTTP stream for a fixed duration. |
 | `lane-analytics replay` | Replay precomputed events to the webhook (simulated live feed). |
 | `lane-analytics doctor` | Show dependency and environment status. |
@@ -441,6 +507,7 @@ highway-lane-occupancy/
 │   ├── annotator.py            # OpenCV rendering
 │   ├── analytics.py            # Pandas summaries and reports
 │   ├── pipeline.py             # orchestration
+│   ├── evidence.py             # snapshots + short clips per event
 │   ├── demo.py                 # synthetic scene + manifest backend
 │   ├── recorder.py             # live HLS/HTTP recorder
 │   ├── replay.py               # webhook sender: paced event micro-batches

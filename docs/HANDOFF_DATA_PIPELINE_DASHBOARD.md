@@ -956,3 +956,51 @@ belum diproses — jalankan dengan perintah yang sama bila diperlukan untuk mena
 ---
 
 *Dokumen ini ditulis 2026-11-08 dari kondisi repo pada commit `c289de1`.*
+
+---
+
+## 16. Pembaruan — evidence snapshot + klip 8 detik
+
+Setiap `analyze` kini menghasilkan bukti visual per event secara otomatis:
+
+```text
+output/evidence/<run_id>/
+  index.json                 # event -> snapshot + clip
+  snapshots/snap_*.jpg       # frame tepat di event (dari video anotasi)
+  clips/clip_*.mp4           # 8 detik: 4 s sebelum + 4 s sesudah
+```
+
+Event yang berbagi frame (`lane_exit` → `lane_change` → `lane_enter`) berbagi satu snapshot
+dan satu klip. Index menyimpan `event_id`, `event_type`, `track_id`, `object_class`,
+`lane_name`, `timestamp`, `video_time_s`, `frame_index`, `severity`, `rule_name`,
+`snapshot`, `clip`, `clip_start_s`, `clip_end_s`, dan `clip_duration_s`. Path media relatif
+terhadap `output/evidence/<run_id>/`.
+
+Konfigurasi:
+
+```yaml
+evidence:
+  enabled: true
+  event_types: []          # [] = semua event
+  before_seconds: 4.0
+  after_seconds: 4.0
+  snapshot_format: jpg
+  snapshot_quality: 92
+  clip_codec: libx264
+  clip_preset: veryfast
+  clip_crf: 23
+  max_clips: null
+  output_dir: null         # default output/evidence/<run_id>
+```
+
+Perintah:
+
+- `lane-analytics analyze --no-evidence` untuk mematikan pada satu run.
+- `lane-analytics evidence --run-id <run_id>` untuk backfill run lama.
+- Offset `--start-frame` dibaca otomatis dari `reports/<run_id>/summary.json`; override
+  dengan `--time-offset`.
+
+Catatan integrasi: bukti belum dikirim lewat webhook. Pipeline yang berjalan di mesin yang
+sama dapat membaca `output/evidence/<run_id>/` langsung. Jika dibuat di Colab, salin folder
+itu ke Drive sebelum sesi berakhir. Dashboard sebaiknya menampilkan snapshot inline,
+memutar klip saat diklik, dan menautkan video penuh pada `t=video_time_s`.

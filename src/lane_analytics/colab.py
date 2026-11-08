@@ -337,7 +337,7 @@ def _process_one(
     imgsz: int | None,
     frame_stride: int | None,
     max_frames: int | None,
-    write_video: bool,
+    write_video: bool | None,
 ):
     from .pipeline import process_video
 
@@ -353,9 +353,10 @@ def _process_one(
     if max_frames is not None:
         config.video.max_frames = max_frames
     config.validate()
+    render_video = bool(config.evidence.enabled) if write_video is None else bool(write_video)
     return process_video(
         config,
-        write_video=write_video,
+        write_video=render_video,
         generate_reports=True,
         run_id=run_id,
     )
@@ -377,7 +378,7 @@ def activate(
     imgsz: int | None = None,
     frame_stride: int | None = None,
     max_frames: int | None = None,
-    write_video: bool = False,
+    write_video: bool | None = None,
     replay: bool = True,
     webhook_url: str | None = None,
     webhook_token: str | None = None,
@@ -402,6 +403,9 @@ def activate(
 
     When ``replay`` is true, each run is posted to ``webhook_url`` (falling back
     to the ``WEBHOOK_URL`` secret) using :func:`lane_analytics.replay.replay_run`.
+
+    ``write_video=None`` renders the annotated video when evidence is enabled, so the
+    per-event snapshots and clips show the detection boxes. Pass ``False`` to skip it.
     """
     kind = str(source).strip().lower()
     if kind not in {"drive_zip", "live"}:
@@ -480,6 +484,10 @@ def activate(
             item["vehicles"] = batch.total_vehicles
             item["events"] = batch.total_events
             item["hogging"] = batch.hogging_events
+            item["evidence_events"] = batch.evidence_events
+            item["evidence_snapshots"] = batch.evidence_snapshots
+            item["evidence_clips"] = batch.evidence_clips
+            item["evidence_dir"] = batch.evidence_dir
 
             if replay:
                 replay_result = replay_run(

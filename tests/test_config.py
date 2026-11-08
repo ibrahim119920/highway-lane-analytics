@@ -173,3 +173,33 @@ def test_anchor_shift_thresholds_are_validated(tmp_path: Path):
 def test_missing_file_has_clear_error(tmp_path: Path):
     with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "does-not-exist.yaml")
+
+
+def test_evidence_defaults(tmp_path: Path):
+    config = load_config(write_config(tmp_path, VALID))
+    assert config.evidence.enabled is True
+    assert config.evidence.before_seconds == 4.0
+    assert config.evidence.after_seconds == 4.0
+    assert config.evidence.event_types == []
+
+
+def test_evidence_window_is_validated(tmp_path: Path):
+    text = VALID.replace(
+        "analytics:", "evidence:\n  before_seconds: -1\nanalytics:"
+    )
+    with pytest.raises(ConfigError, match="evidence.before_seconds"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_unknown_evidence_event_type_is_rejected(tmp_path: Path):
+    text = VALID.replace(
+        "analytics:", "evidence:\n  event_types: [lane_teleport]\nanalytics:"
+    )
+    with pytest.raises(ConfigError, match="lane_teleport"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_evidence_can_be_disabled_with_a_string(tmp_path: Path):
+    text = VALID.replace("analytics:", "evidence:\n  enabled: 'false'\nanalytics:")
+    config = load_config(write_config(tmp_path, text))
+    assert config.evidence.enabled is False

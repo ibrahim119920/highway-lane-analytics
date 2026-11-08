@@ -14,6 +14,12 @@ from .utils import parse_timestamp
 
 ANCHOR_TYPES = ("center", "bottom_center", "bottom_left", "bottom_right", "top_center")
 SEVERITIES = ("low", "medium", "high")
+EVIDENCE_EVENT_TYPES = (
+    "lane_enter",
+    "lane_exit",
+    "lane_change",
+    "lane_hogging_indication",
+)
 
 
 class ConfigError(ValueError):
@@ -88,6 +94,23 @@ class AnalyticsConfig:
 
 
 @dataclass
+class EvidenceConfig:
+    """Snapshot + short-clip evidence for selected lane events."""
+
+    enabled: bool = True
+    event_types: list[str] = field(default_factory=list)
+    before_seconds: float = 4.0
+    after_seconds: float = 4.0
+    snapshot_format: str = "jpg"
+    snapshot_quality: int = 92
+    clip_codec: str = "libx264"
+    clip_preset: str = "veryfast"
+    clip_crf: int = 23
+    max_clips: int | None = None
+    output_dir: str | None = None
+
+
+@dataclass
 class OutputConfig:
     dir: str = "output"
     video: str | None = None
@@ -106,6 +129,7 @@ class AppConfig:
     occupancy: OccupancyConfig = field(default_factory=OccupancyConfig)
     hogging: HoggingConfig = field(default_factory=HoggingConfig)
     analytics: AnalyticsConfig = field(default_factory=AnalyticsConfig)
+    evidence: EvidenceConfig = field(default_factory=EvidenceConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
 
     def validate(self) -> None:
@@ -242,6 +266,32 @@ class AppConfig:
 
         if self.analytics.interval_seconds <= 0:
             raise ConfigError("analytics.interval_seconds must be > 0")
+
+        evidence = self.evidence
+        if float(evidence.before_seconds) < 0:
+            raise ConfigError("evidence.before_seconds must be >= 0")
+        if float(evidence.after_seconds) < 0:
+            raise ConfigError("evidence.after_seconds must be >= 0")
+        if float(evidence.before_seconds) + float(evidence.after_seconds) <= 0:
+            raise ConfigError("evidence.before_seconds + evidence.after_seconds must be > 0")
+        if str(evidence.snapshot_format).lower() not in {"jpg", "jpeg", "png"}:
+            raise ConfigError("evidence.snapshot_format must be jpg, jpeg, or png")
+        if not 1 <= int(evidence.snapshot_quality) <= 100:
+            raise ConfigError("evidence.snapshot_quality must be between 1 and 100")
+        if not 0 <= int(evidence.clip_crf) <= 51:
+            raise ConfigError("evidence.clip_crf must be between 0 and 51")
+        if evidence.max_clips is not None and int(evidence.max_clips) < 1:
+            raise ConfigError("evidence.max_clips must be null or >= 1")
+        unknown_event_types = sorted(
+            set(str(name) for name in evidence.event_types) - set(EVIDENCE_EVENT_TYPES)
+        )
+        if unknown_event_types:
+            raise ConfigError(
+                "evidence.event_types contains unknown event type(s): "
+                + ", ".join(unknown_event_types)
+                + "; allowed: "
+                + ", ".join(EVIDENCE_EVENT_TYPES)
+            )
 
         if not self.output.dir:
             raise ConfigError("output.dir must not be empty")
@@ -381,6 +431,48 @@ def _hogging(data: Any) -> HoggingConfig:
     )
 
 
+def _evidence(data: Any) -> EvidenceConfig:
+    if data is None:
+        return EvidenceConfig()
+    if not isinstance(data, dict):
+        raise ConfigError("'evidence' must be a mapping")
+    allowed = {item.name for item in dataclasses.fields(EvidenceConfig)}
+    unknown = sorted(set(data) - allowed)
+    if unknown:
+        raise ConfigError(f"Unknown key(s) in 'evidence': {', '.join(unknown)}")
+
+    values = dict(data)
+    if "enabled" in values:
+        enabled = values["enabled"]
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() not in {"false", "0", "no", "off"}
+        values["enabled"] = bool(enabled)
+    for key in ("before_seconds", "after_seconds"):
+        if key in values:
+            values[key] = _number(values[key], f"evidence.{key}")
+    for key in ("snapshot_quality", "clip_crf"):
+        if key in values:
+            try:
+                values[key] = int(values[key])
+            except (TypeError, ValueError) as exc:
+                raise ConfigError(f"evidence.{key} must be an integer") from exc
+    if "max_clips" in values and values["max_clips"] is not None:
+        try:
+            values["max_clips"] = int(values["max_clips"])
+        except (TypeError, ValueError) as exc:
+            raise ConfigError("evidence.max_clips must be an integer or null") from exc
+    if "event_types" in values:
+        raw = values["event_types"]
+        if raw is None:
+            raw = []
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple)):
+            raise ConfigError("evidence.event_types must be a list of event type names")
+        values["event_types"] = [str(item) for item in raw]
+    return EvidenceConfig(**values)
+
+
 def load_config(path: str | Path = "config/config.yaml") -> AppConfig:
     """Load and validate a YAML configuration file."""
     config_path = Path(path)
@@ -403,6 +495,7 @@ def load_config(path: str | Path = "config/config.yaml") -> AppConfig:
         "occupancy",
         "hogging",
         "analytics",
+        "evidence",
         "output",
     }
     unknown = sorted(set(raw) - allowed_top)
@@ -418,6 +511,7 @@ def load_config(path: str | Path = "config/config.yaml") -> AppConfig:
         occupancy=_section(OccupancyConfig, raw.get("occupancy"), "occupancy"),
         hogging=_hogging(raw.get("hogging")),
         analytics=_section(AnalyticsConfig, raw.get("analytics"), "analytics"),
+        evidence=_evidence(raw.get("evidence")),
         output=_section(OutputConfig, raw.get("output"), "output"),
     )
     config.validate()
@@ -438,6 +532,17 @@ def describe_config(config: AppConfig) -> str:
             f" (adaptive: <= {config.occupancy.anchor_shift_small_bbox_px:.0f}px centre,"
             f" >= {config.occupancy.anchor_shift_large_bbox_px:.0f}px outer corner)"
         )
+    evidence_summary = "disabled"
+    if config.evidence.enabled:
+        selected = (
+            ", ".join(config.evidence.event_types)
+            if config.evidence.event_types
+            else "all events"
+        )
+        evidence_summary = (
+            f"snapshot + {config.evidence.before_seconds:.0f}s/"
+            f"{config.evidence.after_seconds:.0f}s clip ({selected})"
+        )
     return "\n".join(
         [
             f"camera_id       : {config.camera_id}",
@@ -450,6 +555,7 @@ def describe_config(config: AppConfig) -> str:
             f"anchor          : {anchor_summary}",
             f"hogging         : {'enabled' if config.hogging.enabled else 'disabled'} "
             f"({rule_summary})",
+            f"evidence        : {evidence_summary}",
         ]
     )
 

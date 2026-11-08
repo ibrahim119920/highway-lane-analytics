@@ -48,6 +48,11 @@ class RunResult:
     events: list[LaneEvent] = field(default_factory=list, repr=False)
     tracks: list[dict[str, Any]] = field(default_factory=list, repr=False)
     start_frame: int = 0
+    evidence_dir: str | None = None
+    evidence_index: str | None = None
+    evidence_events: int = 0
+    evidence_snapshots: int = 0
+    evidence_clips: int = 0
 
     @property
     def processing_fps(self) -> float:
@@ -335,6 +340,55 @@ def process_video(
     frames_in_run = max(0, frames_read - first_frame)
     duration_s = frames_in_run / source_fps if source_fps > 0 else 0.0
 
+    evidence_result = None
+    if config.evidence.enabled:
+        media_video = (
+            output_video_path
+            if write_video and output_video_path.exists()
+            else source_path
+        )
+        if not write_video:
+            log.warning(
+                "Evidence uses the source video because the annotated video is disabled; "
+                "snapshots and clips will not show detection boxes."
+            )
+        evidence_root = (
+            Path(config.evidence.output_dir)
+            if config.evidence.output_dir
+            else output_root / "evidence"
+        )
+        try:
+            from .evidence import generate_evidence
+
+            evidence_result = generate_evidence(
+                run_id=run_id,
+                events_path=events_out_path,
+                video_path=media_video,
+                output_dir=evidence_root / run_id,
+                camera_id=config.camera_id,
+                event_types=config.evidence.event_types,
+                before_seconds=config.evidence.before_seconds,
+                after_seconds=config.evidence.after_seconds,
+                snapshot_format=config.evidence.snapshot_format,
+                snapshot_quality=config.evidence.snapshot_quality,
+                clip_codec=config.evidence.clip_codec,
+                clip_preset=config.evidence.clip_preset,
+                clip_crf=config.evidence.clip_crf,
+                max_clips=config.evidence.max_clips,
+                time_offset_s=(first_frame / source_fps) if source_fps > 0 else 0.0,
+            )
+            log.info(
+                "Evidence: %d events, %d snapshots, %d clips -> %s",
+                evidence_result.event_count,
+                evidence_result.snapshot_count,
+                evidence_result.clip_count,
+                evidence_result.directory,
+            )
+            for message in evidence_result.errors[:5]:
+                log.warning("Evidence: %s", message)
+        except Exception as exc:  # never lose the main artifacts because of evidence
+            log.warning("Evidence generation failed: %s", exc)
+
     track_records = [summary.to_dict() for summary in tracker.track_summaries()]
     with tracks_out_path.open("w", encoding="utf-8") as track_handle:
         for record in track_records:
@@ -356,6 +410,9 @@ def process_video(
         "base_timestamp": base_timestamp.isoformat(timespec="seconds"),
         "lanes": [lane.as_dict() for lane in lanes],
         "hogging_rules": [rule.name for rule in rules],
+        "evidence": (
+            evidence_result.as_dict() if evidence_result is not None else {"enabled": False}
+        ),
     }
     summary = summarize_events(
         event_records,
@@ -415,4 +472,9 @@ def process_video(
         events=[LaneEvent(**record) for record in event_records],
         tracks=track_records,
         start_frame=first_frame,
+        evidence_dir=evidence_result.directory if evidence_result else None,
+        evidence_index=evidence_result.index_path if evidence_result else None,
+        evidence_events=evidence_result.event_count if evidence_result else 0,
+        evidence_snapshots=evidence_result.snapshot_count if evidence_result else 0,
+        evidence_clips=evidence_result.clip_count if evidence_result else 0,
     )
