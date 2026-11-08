@@ -82,8 +82,12 @@ class Annotator:
             self._prune_trails(frame_index)
             self._draw_trails(frame)
 
+        # Two passes: every box first, then every label. A label can never be
+        # drawn underneath another object's bounding box.
         for obj in objects:
-            self._draw_object(frame, obj, status_by_track.get(obj.track_id, {}), scale)
+            self._draw_box(frame, obj, status_by_track.get(obj.track_id, {}))
+        for obj in objects:
+            self._draw_label(frame, obj, status_by_track.get(obj.track_id, {}), scale)
 
         self._draw_hud(
             frame,
@@ -117,20 +121,43 @@ class Annotator:
                 2,
                 cv2.LINE_AA,
             )
-            cx, cy = lane.centroid
+            anchor_x, anchor_y = self._lane_label_anchor(points)
             label = f"{lane.name}"
             if lane.index is not None:
                 label = f"L{lane.index} {label}"
             if lane.role:
                 label += f" [{lane.role}]"
-            self._label(
+
+            # Keep lane labels out of the drivable area: place them above the
+            # top edge (the horizon end of the lane) and stagger by lane index.
+            # Northbound labels grow leftward, southbound labels rightward, so
+            # the two directions do not collide near the median.
+            northbound = str(lane.direction).lower().startswith("north")
+            index = max(1, lane.index or 1)
+            label_y = anchor_y - 10 - 20 * (index - 1)
+            if northbound:
+                label_x = anchor_x - 4
+                align = "right"
+            else:
+                label_x = anchor_x + 4
+                align = "left"
+            cv2.line(
                 frame,
-                label,
-                (int(round(cx * width)), int(round(cy * height))),
+                (anchor_x, anchor_y),
+                (label_x, label_y + 2),
                 color,
-                centered=True,
+                1,
+                cv2.LINE_AA,
             )
+            self._label(frame, label, (label_x, label_y), color, align=align)
         return frame
+
+    @staticmethod
+    def _lane_label_anchor(points: Sequence[tuple[int, int]]) -> tuple[int, int]:
+        """Top edge midpoint of a lane polygon, used as its label anchor."""
+        top_y = min(point[1] for point in points)
+        top_xs = [point[0] for point in points if abs(point[1] - top_y) <= 1]
+        return int(round(sum(top_xs) / len(top_xs))), int(top_y)
 
     # ------------------------------------------------------------------- trails
     def _draw_trails(self, frame: np.ndarray) -> None:
@@ -154,12 +181,11 @@ class Annotator:
             self._track_class.pop(track_id, None)
 
     # ------------------------------------------------------------------ objects
-    def _draw_object(
+    def _draw_box(
         self,
         frame: np.ndarray,
         obj: TrackedObject,
         status: dict[str, object],
-        scale: float,
     ) -> None:
         height, width = frame.shape[:2]
         hogging = bool(status.get("hogging"))
@@ -192,6 +218,22 @@ class Annotator:
             cv2.circle(frame, (anchor_x, anchor_y), 4, (255, 255, 255), -1, cv2.LINE_AA)
             cv2.circle(frame, (anchor_x, anchor_y), 6, color, 1, cv2.LINE_AA)
 
+    def _draw_label(
+        self,
+        frame: np.ndarray,
+        obj: TrackedObject,
+        status: dict[str, object],
+        scale: float,
+    ) -> None:
+        height, width = frame.shape[:2]
+        hogging = bool(status.get("hogging"))
+        color = HOGGING_COLOR if hogging else class_color(obj.class_name)
+        x1, y1, x2, y2 = obj.as_int_bbox()
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(width - 1, x2), min(height - 1, y2)
+        if x2 <= x1 or y2 <= y1:
+            return
+
         lane_name = str(status.get("lane") or "")
         dwell = float(status.get("dwell_seconds") or 0.0)
         lane_text = f"{lane_name} {dwell:.1f}s" if lane_name else "lane n/a"
@@ -205,7 +247,14 @@ class Annotator:
         if label_y1 < 0:
             label_y1 = y1 + 2
         label_x2 = min(width - 1, x1 + text_w + 10)
-        cv2.rectangle(frame, (x1, label_y1), (label_x2, label_y1 + text_h + baseline + 4), color, -1)
+        # Translucent background: boxes and the vehicle remain visible underneath.
+        self._fill_rect_alpha(
+            frame,
+            (x1, label_y1),
+            (label_x2, label_y1 + text_h + baseline + 4),
+            color,
+            0.78,
+        )
         text_color = (15, 15, 15) if sum(color) > 360 else (245, 245, 245)
         cv2.putText(
             frame,
@@ -226,12 +275,15 @@ class Annotator:
             (tag_w, tag_h), tag_base = cv2.getTextSize(
                 tag, cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.9, 1
             )
-            cv2.rectangle(
+            self._fill_rect_alpha(
                 frame,
                 (x1, tag_y),
-                (min(width - 1, x1 + tag_w + 8), min(height - 1, tag_y + tag_h + tag_base + 4)),
+                (
+                    min(width - 1, x1 + tag_w + 8),
+                    min(height - 1, tag_y + tag_h + tag_base + 4),
+                ),
                 HOGGING_COLOR,
-                -1,
+                0.88,
             )
             cv2.putText(
                 frame,
@@ -253,6 +305,25 @@ class Annotator:
                 1,
                 cv2.LINE_AA,
             )
+
+    @staticmethod
+    def _fill_rect_alpha(
+        frame: np.ndarray,
+        top_left: tuple[int, int],
+        bottom_right: tuple[int, int],
+        color: tuple[int, int, int],
+        alpha: float,
+    ) -> None:
+        """Blend a filled rectangle with the pixels already in ``frame``."""
+        height, width = frame.shape[:2]
+        x1, y1 = max(0, top_left[0]), max(0, top_left[1])
+        x2, y2 = min(width - 1, bottom_right[0]), min(height - 1, bottom_right[1])
+        if x2 <= x1 or y2 <= y1:
+            return
+        roi = frame[y1:y2, x1:x2]
+        overlay = np.empty_like(roi)
+        overlay[:] = color
+        cv2.addWeighted(overlay, float(alpha), roi, 1.0 - float(alpha), 0, dst=roi)
 
     # --------------------------------------------------------------------- HUD
     def _draw_hud(
@@ -437,14 +508,15 @@ class Annotator:
         position: tuple[int, int],
         color: tuple[int, int, int],
         *,
-        centered: bool = False,
+        align: str = "left",
     ) -> None:
         font_scale = 0.42
         (text_w, text_h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
         x, y = position
-        if centered:
+        if align == "right":
+            x -= text_w
+        elif align == "center":
             x -= text_w // 2
-            y -= text_h // 2
         x = max(2, min(frame.shape[1] - text_w - 4, x))
         y = max(text_h + 2, min(frame.shape[0] - baseline - 3, y))
         cv2.rectangle(

@@ -80,6 +80,12 @@ than a lane, enable the adaptive anchor.
 The annotator draws the anchor as a small white dot inside each box, which makes lane
 assignment errors easy to spot in the output video.
 
+Lane-name labels are placed above the horizon end of each polygon, staggered by lane index
+(northbound labels grow leftward, southbound rightward), so they never sit over the
+roadway. Object rendering uses two passes: every box first, then every label. Vehicle
+label backgrounds are translucent, so a label that overlaps another box dims it instead of
+hiding it.
+
 
 ### 5. Hysteresis
 
