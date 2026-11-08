@@ -7,9 +7,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
-def ensure_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+def ensure_dir(path: str | Path) -> Path:
+    target = Path(path)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 def parse_timestamp(value: str) -> datetime:
