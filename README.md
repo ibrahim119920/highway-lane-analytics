@@ -8,11 +8,6 @@ hogging indications** plus lane-change events.
 The project is designed to run in **Google Colab** (CPU or GPU) and to export
 append-friendly JSONL that can be consumed by a real-time data pipeline.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ibrahim119920/highway-lane-analytics/blob/master/notebooks/demo_recruiter.ipynb)
-**[Try the 55-second demo in Colab](https://colab.research.google.com/github/ibrahim119920/highway-lane-analytics/blob/master/notebooks/demo_recruiter.ipynb)**
-or read the [recruiter guide](docs/DEMO_FOR_RECRUITERS.md). The production dashboard is
-public at <https://lane.syaifudin-fam.my.id>.
-
 The repository ships a **calibrated profile** for a real night-time toll-road camera
 (Tj. Priok, KM 58+400 B, 1024x768 @ 18 fps): six lanes across both carriageways, with the
 median-side lane marked as the overtaking lane in each direction. Recalibrate the polygons
