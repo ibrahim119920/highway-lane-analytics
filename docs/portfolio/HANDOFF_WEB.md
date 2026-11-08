@@ -221,7 +221,7 @@ dot. **PENDING** — can be drawn as SVG by the editor; no photo needed.
 | Rule | Applies to | Condition | Severity |
 | --- | --- | --- | --- |
 | `heavy_cruising_lane_2_3` | truck, bus | cruising in lane 2/3 (exempt while passing), 0.4 s guard | high |
-| `car_cruising_lane_2_3` | car | cruising in lane 2/3 (exempt while passing), 0.4 s guard | medium |
+| `car_cruising_lane_3` | car | cruising in lane 3 (exempt while passing), 0.4 s guard | medium |
 
 "Passing" is decided from bbox position and relative speed: a slower vehicle in the
 adjacent inner lane, ahead within 10% of the frame height, exempts the ego vehicle.

@@ -363,8 +363,8 @@ hogging:
       exempt_when_overtaking: true
       severity: high
 
-    - name: car_cruising_lane_2_3
-      lane_indices: [2, 3]
+    - name: car_cruising_lane_3
+      lane_indices: [3]
       classes: [car]
       min_dwell_seconds: 0.4
       exempt_when_overtaking: true
@@ -427,16 +427,19 @@ Results on the 10-minute KM 58+400 sheet:
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Original run (lane 3 only rules) | 56 | 19 | 9 | 24 | 0.679 | 0.442 | 0.535 |
 | Tuned, stint-stint proxy | 56 | 42 | 5 | 1 | 0.894 | 0.977 | 0.933 |
-| Tuned, per-frame bbox replay | 49 | 36 | 6 | 0 | 0.857 | 1.000 | 0.923 |
+| Tuned, per-frame bbox replay | 49 | 35 | 6 | 1 | 0.854 | 0.972 | 0.909 |
 
 The proxy mode scores the run that produced the labels. The exact mode requires a local
 frame log; because CPU and GPU inference assign different track ids, the label sheet is
 matched to the local run by time + lane (`49/56` vehicles matched at IoU >= 0.5), and the
-remaining seven are excluded. Both evaluations agree within ~0.01 F1.
+remaining seven are excluded. The exact replay exposes one extra miss: `#605` is a truck
+in lane 2 that the detector reads as a car, so the lane-2 heavy-vehicle rule does not
+apply to it.
 
 Remaining misses are six short lane-3/lane-2 stints (1.1-2.7 s) where the overtaken
-vehicle was not detected in the adjacent lane during that stint. Per-frame replay resolves
-the cases where the partner is visible; a longer detection range would resolve the rest.
+vehicle was not detected in the adjacent lane during that stint, plus `#605`. Per-frame
+replay resolves the cases where the partner is visible; a longer detection range would
+resolve the rest.
 
 Because the overtaking decision needs the whole pass, `evaluate_at: stint` emits
 `lane_hogging_indication` when the lane stint ends, and `dwell_seconds` is the final stint
@@ -446,8 +449,9 @@ dwell. The live HUD still shows the candidate badge while the vehicle is in the 
 track, not the latest frame, so a single low-confidence `bus`/`truck` frame cannot flip
 the rule. On the 56 labeled vehicles the tracker agrees with the manual class on 47/55
 (85.5%); the eight mismatches are truck/bus and car/truck confusions in the small YOLO
-backbone. The rule uses the class only for severity (heavy = high, car = medium), so a
-class flip does not change whether a vehicle is flagged.
+backbone. Class now matters twice: it sets severity (heavy = high, car = medium) and it
+selects the lane-2 rule (lane 2 is heavy-only), so a truck read as a car can miss the
+lane-2 indication — this is the `#605` miss in the exact replay.
 
 See [docs/LANE_RULES.md](docs/LANE_RULES.md) for the original calibration procedure.
 
@@ -513,7 +517,7 @@ annotated clip for every event. Events that share a frame (the `lane_exit` →
   "video_time_s": 6.687,
   "frame_index": 120,
   "severity": "medium",
-  "rule_name": "car_cruising_lane_2_3",
+  "rule_name": "car_cruising_lane_3",
   "snapshot": "snapshots/snap_000120.jpg",
   "clip": "clips/clip_000120.mp4",
   "clip_start_s": 2.687,

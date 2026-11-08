@@ -78,8 +78,8 @@ hogging:
       exempt_when_overtaking: true
       severity: high
 
-    - name: car_cruising_lane_2_3
-      lane_indices: [2, 3]
+    - name: car_cruising_lane_3
+      lane_indices: [3]
       classes: [car]
       min_dwell_seconds: 0.4
       exempt_when_overtaking: true
@@ -89,7 +89,8 @@ hogging:
 What this means for the shipped camera:
 
 - A truck or bus *cruising* in lane 2 or 3 for 0.4 continuous seconds → `high` indication.
-- A car *cruising* in lane 2 or 3 for 0.4 continuous seconds → `medium` indication.
+- A car *cruising* in lane 3 for 0.4 continuous seconds → `medium` indication. A car
+  cruising in lane 2 is normal traffic and is not flagged.
 - A vehicle that is passing a slower vehicle in the adjacent inner lane → no indication,
   regardless of dwell time.
 - Lane 1 is never flagged by these rules.

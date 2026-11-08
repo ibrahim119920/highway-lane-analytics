@@ -189,13 +189,13 @@ def _rules_for(params: Params) -> list[HoggingRuleConfig]:
             description="Truk/bus cruising di lajur 2/3 tanpa sedang mendahului.",
         ),
         HoggingRuleConfig(
-            name="car_cruising_lane_2_3",
-            lane_indices=list(HOGGING_LANES),
+            name="car_cruising_lane_3",
+            lane_indices=[3],
             classes=list(LIGHT_CLASSES),
             min_dwell_seconds=params.car_dwell,
             exempt_when_overtaking=params.overtake_exemption,
             severity="medium",
-            description="Mobil cruising di lajur 2/3 tanpa sedang mendahului.",
+            description="Mobil cruising di lajur 3 tanpa sedang mendahului.",
         ),
     ]
 

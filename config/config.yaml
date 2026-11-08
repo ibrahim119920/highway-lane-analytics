@@ -150,14 +150,15 @@ hogging:
       severity: high
       description: "Truk/bus cruising di lajur 2/3 tanpa sedang mendahului."
 
-    # A car that stays in lane 2/3 without an overtake target.
-    - name: car_cruising_lane_2_3
-      lane_indices: [2, 3]
+    # A car that stays in lane 3 without an overtake target. Cars cruising in
+    # lane 2 are not flagged: that lane is normal for cars in this profile.
+    - name: car_cruising_lane_3
+      lane_indices: [3]
       classes: [car]
       min_dwell_seconds: 0.4
       exempt_when_overtaking: true
       severity: medium
-      description: "Mobil cruising di lajur 2/3 tanpa sedang mendahului."
+      description: "Mobil cruising di lajur 3 tanpa sedang mendahului."
 
 analytics:
   interval_seconds: 60         # time bucket for event timeseries

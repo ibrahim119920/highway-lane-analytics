@@ -234,18 +234,17 @@ hogging:
     exempt_when_overtaking: true
     severity: high
     description: Truk/bus cruising di lajur 2/3 tanpa sedang mendahului.
-  - name: car_cruising_lane_2_3
+  - name: car_cruising_lane_3
     lanes: []
     lane_roles: []
     lane_indices:
-    - 2
     - 3
     classes:
     - car
     min_dwell_seconds: 0.4
     exempt_when_overtaking: true
     severity: medium
-    description: Mobil cruising di lajur 2/3 tanpa sedang mendahului.
+    description: Mobil cruising di lajur 3 tanpa sedang mendahului.
 analytics:
   interval_seconds: 60
 evidence:
