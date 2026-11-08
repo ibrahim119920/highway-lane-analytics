@@ -495,6 +495,7 @@ highway-lane-occupancy/
 │   ├── DATA_SCHEMA.md
 │   ├── LANE_RULES.md
 │   ├── RUNBOOK.md
+│   ├── portfolio/              # CV + web handoff docs and media assets
 │   ├── schema/lane_event.schema.json
 │   └── sample_output/          # committed synthetic demo artifacts
 ├── notebooks/colab_lane_occupancy.ipynb
