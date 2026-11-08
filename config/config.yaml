@@ -21,7 +21,12 @@ model:
 
 video:
   path: data/raw/km58_400B_tj_priok_20261107_161545.mp4
-  frame_stride: 2              # 18 fps source -> ~9 fps processed
+  # 1 = detect on every frame. The source is only ~18 fps, and skipping frames
+  # makes ByteTrack fail to confirm fast near-field vehicles: an unconfirmed
+  # track is matched against its last position, so a stride of 2 can drop the
+  # IoU below the tracker's 0.3 threshold and delay the first box by ~0.7 s.
+  # Raise to 2 only for throughput-first batch runs where that latency is fine.
+  frame_stride: 1
   max_frames: null             # optional cap on source frames read
   output_fps: null             # null = source_fps / frame_stride
 

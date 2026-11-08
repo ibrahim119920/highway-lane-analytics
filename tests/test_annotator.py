@@ -24,6 +24,37 @@ def test_lane_label_anchor_is_top_edge_midpoint():
     assert Annotator._lane_label_anchor(points) == (20, 100)
 
 
+def test_lane_labels_sit_high_in_the_sky():
+    lane = make_lane()
+    x, y, align = Annotator._lane_label_position(lane, anchor_x=500, anchor_y=285, frame_height=768)
+
+    # Labels must be lifted well above the horizon (y=285) into the sky band.
+    assert y <= 190
+    assert 285 - y >= 100
+    assert align == "right"
+    assert x == 496
+
+
+def test_lane_labels_are_staggered_by_index():
+    positions = [
+        Annotator._lane_label_position(
+            make_lane(index=index), anchor_x=500, anchor_y=285, frame_height=768
+        )[1]
+        for index in (1, 2, 3)
+    ]
+    assert positions == sorted(positions, reverse=True)
+    assert len(set(positions)) == 3
+
+
+def test_southbound_lane_labels_grow_rightward():
+    lane = make_lane(name="sb_lane_2", index=2, direction="southbound")
+    x, _, align = Annotator._lane_label_position(
+        lane, anchor_x=550, anchor_y=285, frame_height=768
+    )
+    assert align == "left"
+    assert x == 554
+
+
 def test_lane_label_sits_above_the_polygon():
     frame = np.zeros((200, 300, 3), dtype=np.uint8)
     annotator = Annotator([make_lane()], "cam_01")

@@ -116,8 +116,9 @@ Useful parameters: `max_videos`, `device` (`"0"` on GPU), `imgsz`, `frame_stride
 `dry_run=True`.
 
 Colab already ships CUDA-enabled PyTorch, so do **not** install a CPU torch wheel there.
-CPU inference also works: set `model.device: cpu`, `video.frame_stride: 2` or `3`, and
-optionally `model.imgsz: 640`.
+CPU inference also works: keep `model.device: cpu`, and if throughput matters more than
+latency you can raise `video.frame_stride` to 2 or 3 (fast near-field vehicles then take
+longer to get their first box) and optionally lower `model.imgsz` to 640.
 
 ### Option B - offline synthetic demo (no YOLO, ~1 minute)
 
@@ -220,6 +221,10 @@ The complete definition is in [`config/config.yaml`](config/config.yaml).
 | Hogging indications | 8 (7 medium, 1 high) |
 | Throughput | ~8 fps (2728 processed frames in 5m37s) |
 
+That table is the stride-2 batch run. The default is now `frame_stride: 1` so a fast
+near-field vehicle gets its first box on the next frame instead of waiting for ByteTrack
+to re-confirm it.
+
 ### Recalibrating for another camera
 
 ```powershell
@@ -316,7 +321,8 @@ triggers once a vehicle has stayed continuously in a matching lane for at least
 
 | Setting | Effect |
 | --- | --- |
-| `video.frame_stride: 2` | Process every 2nd frame (9 fps from the 18 fps source). |
+| `video.frame_stride: 1` | Detect on every frame (default). Lowest latency; a fast vehicle near the camera gets its first box on the next frame. |
+| `video.frame_stride: 2` | Process every 2nd frame (~9 fps from the 18 fps source). ~2x faster, but ByteTrack can need up to ~0.7 s longer to confirm fast near-field vehicles. |
 | `video.frame_stride: 3` | Faster still; dwell timing remains based on source FPS. |
 | `model.imgsz: 960` | Default: near-native for 1024x768, catches small distant vehicles. |
 | `model.imgsz: 640` | ~2x faster, but loses some far-field detections. |

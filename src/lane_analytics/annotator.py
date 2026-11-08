@@ -110,6 +110,9 @@ class Annotator:
             cv2.fillPoly(overlay, [np.array(points, dtype=np.int32)], color)
         cv2.addWeighted(overlay, 0.12, frame, 0.88, 0, dst=frame)
 
+        placements: list[
+            tuple[tuple[int, int, int], str, int, int, int, int, str]
+        ] = []
         for lane in self._lanes:
             points = lane.pixel_points(width, height)
             color = lane_color(lane.role)
@@ -127,20 +130,15 @@ class Annotator:
                 label = f"L{lane.index} {label}"
             if lane.role:
                 label += f" [{lane.role}]"
+            label_x, label_y, align = self._lane_label_position(
+                lane, anchor_x, anchor_y, height
+            )
+            placements.append(
+                (color, label, anchor_x, anchor_y, label_x, label_y, align)
+            )
 
-            # Keep lane labels out of the drivable area: place them above the
-            # top edge (the horizon end of the lane) and stagger by lane index.
-            # Northbound labels grow leftward, southbound labels rightward, so
-            # the two directions do not collide near the median.
-            northbound = str(lane.direction).lower().startswith("north")
-            index = max(1, lane.index or 1)
-            label_y = anchor_y - 10 - 20 * (index - 1)
-            if northbound:
-                label_x = anchor_x - 4
-                align = "right"
-            else:
-                label_x = anchor_x + 4
-                align = "left"
+        # Leader lines first, labels second: a line can never cross the label text.
+        for color, _, anchor_x, anchor_y, label_x, label_y, _ in placements:
             cv2.line(
                 frame,
                 (anchor_x, anchor_y),
@@ -149,6 +147,7 @@ class Annotator:
                 1,
                 cv2.LINE_AA,
             )
+        for color, label, _, _, label_x, label_y, align in placements:
             self._label(frame, label, (label_x, label_y), color, align=align)
         return frame
 
@@ -158,6 +157,27 @@ class Annotator:
         top_y = min(point[1] for point in points)
         top_xs = [point[0] for point in points if abs(point[1] - top_y) <= 1]
         return int(round(sum(top_xs) / len(top_xs))), int(top_y)
+
+    @staticmethod
+    def _lane_label_position(
+        lane: LaneRegion,
+        anchor_x: int,
+        anchor_y: int,
+        frame_height: int,
+    ) -> tuple[int, int, str]:
+        """Place a lane label high in the sky, clear of the horizon and traffic.
+
+        The label is lifted by a fraction of the frame height and staggered per
+        lane index. Northbound labels grow leftward and southbound labels grow
+        rightward, so both directions stay clear of the median.
+        """
+        index = max(1, lane.index or 1)
+        base_gap = int(round(frame_height * 0.14))
+        stagger = int(round(frame_height * 0.045)) * (index - 1)
+        label_y = max(30, anchor_y - base_gap - stagger)
+        if str(lane.direction).lower().startswith("north"):
+            return anchor_x - 4, label_y, "right"
+        return anchor_x + 4, label_y, "left"
 
     # ------------------------------------------------------------------- trails
     def _draw_trails(self, frame: np.ndarray) -> None:

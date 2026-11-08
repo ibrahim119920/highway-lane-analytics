@@ -33,9 +33,12 @@ flowchart TD
 
 ### 1. Frame sampling
 
-`video.frame_stride` controls how many source frames are skipped. Timing is always
+`video.frame_stride` controls how many source frames are skipped. The default is 1
+(every frame): with an ~18 fps source, skipping frames can make ByteTrack fail to
+confirm a fast near-field vehicle, because an unconfirmed track is associated against
+its last position and the IoU can drop below the 0.3 match threshold. Timing is always
 computed from the source frame index (`frame_index / source_fps`), so a stride of 2 or 3
-does not change dwell durations.
+does not change dwell durations - only how early a fast vehicle is confirmed.
 
 ### 2. Detection and tracking
 
@@ -80,11 +83,12 @@ than a lane, enable the adaptive anchor.
 The annotator draws the anchor as a small white dot inside each box, which makes lane
 assignment errors easy to spot in the output video.
 
-Lane-name labels are placed above the horizon end of each polygon, staggered by lane index
-(northbound labels grow leftward, southbound rightward), so they never sit over the
-roadway. Object rendering uses two passes: every box first, then every label. Vehicle
-label backgrounds are translucent, so a label that overlaps another box dims it instead of
-hiding it.
+Lane-name labels are lifted into the sky, a fixed fraction of the frame height above the
+horizon end of each polygon and staggered by lane index (northbound labels grow leftward,
+southbound rightward), with a thin leader line down to the lane. They never sit over the
+roadway or a vehicle. Object rendering uses two passes: every box first, then every label.
+Vehicle label backgrounds are translucent, so a label that overlaps another box dims it
+instead of hiding it.
 
 
 ### 5. Hysteresis
@@ -203,4 +207,5 @@ event's source time is converted to the annotated video's local time using
 | No hogging events | Rule role/lane names mismatch | Check `lanes[].role` and `lane_roles`, lower threshold. |
 | Hogging on normal usage | Threshold too low or wrong role | Review road rules and raise the threshold. |
 | Short dwell durations | Track ID switched or vehicle occluded | Improve detection size/confidence, review footage. |
+| First box ~0.5-1 s late on a fast near-field vehicle | `frame_stride > 1`; ByteTrack matches unconfirmed tracks against their last position and can miss across large motion | Keep `frame_stride: 1`, or lower it for latency-sensitive runs. |
 | Slow CPU run | Full-resolution YOLO on every frame | Use stride 2-3, `imgsz: 480`, `--no-video`. |
