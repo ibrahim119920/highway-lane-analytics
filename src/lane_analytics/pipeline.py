@@ -475,6 +475,7 @@ def process_video(
                 clip_codec=config.evidence.clip_codec,
                 clip_preset=config.evidence.clip_preset,
                 clip_crf=config.evidence.clip_crf,
+                clip_max_bitrate_kbps=config.evidence.clip_max_bitrate_kbps,
                 max_clips=config.evidence.max_clips,
                 time_offset_s=(first_frame / source_fps) if source_fps > 0 else 0.0,
             )

@@ -238,12 +238,17 @@ def _write_clip_ffmpeg(
     codec: str,
     preset: str,
     crf: int,
+    max_bitrate_kbps: int = 0,
 ) -> bool:
     ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
         return False
     destination.parent.mkdir(parents=True, exist_ok=True)
     duration = max(0.05, end_s - start_s)
+    rate_args: list[str] = []
+    if max_bitrate_kbps and max_bitrate_kbps > 0:
+        rate = f"{int(max_bitrate_kbps)}k"
+        rate_args = ["-maxrate", rate, "-bufsize", f"{int(max_bitrate_kbps) * 2}k"]
     command = [
         ffmpeg,
         "-hide_banner",
@@ -263,6 +268,7 @@ def _write_clip_ffmpeg(
         preset,
         "-crf",
         str(crf),
+        *rate_args,
         "-pix_fmt",
         "yuv420p",
         "-movflags",
@@ -338,6 +344,7 @@ def generate_evidence(
     clip_codec: str = "libx264",
     clip_preset: str = "veryfast",
     clip_crf: int = 23,
+    clip_max_bitrate_kbps: int = 500,
     max_clips: int | None = None,
     time_offset_s: float = 0.0,
     use_ffmpeg: bool = True,
@@ -444,6 +451,7 @@ def generate_evidence(
                 codec=clip_codec,
                 preset=clip_preset,
                 crf=clip_crf,
+                max_bitrate_kbps=clip_max_bitrate_kbps,
             )
         if not success:
             success = _write_clip_opencv(

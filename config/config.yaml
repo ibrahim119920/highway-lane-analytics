@@ -175,6 +175,7 @@ evidence:
   clip_codec: libx264
   clip_preset: veryfast
   clip_crf: 23
+  clip_max_bitrate_kbps: 500  # ~500 KB per 8 s clip; 0 = let CRF decide
   max_clips: null          # optional cap on unique clips per run
   output_dir: null         # null = output/evidence/<run_id>
 

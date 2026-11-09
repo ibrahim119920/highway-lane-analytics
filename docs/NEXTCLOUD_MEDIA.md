@@ -148,6 +148,9 @@ then the bundled binary from `imageio-ffmpeg`, then OpenCV. The OpenCV fallback 
 MPEG-4 Part 2, which Chrome/Edge cannot decode; keep ffmpeg or `imageio-ffmpeg`
 installed (it is in `requirements.txt`) if the player stays black.
 
+`evidence.clip_max_bitrate_kbps` defaults to `500`, which keeps an 8-second clip at
+roughly 500 KB (`500 kbps`). Set it to `0` to let CRF alone decide the size.
+
 ## Verified end-to-end (2026-11-09)
 
 A real run was uploaded from a Windows machine through Cloudflare to the production

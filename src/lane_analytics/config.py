@@ -127,6 +127,7 @@ class EvidenceConfig:
     clip_codec: str = "libx264"
     clip_preset: str = "veryfast"
     clip_crf: int = 23
+    clip_max_bitrate_kbps: int = 500  # ~500 KB for an 8 s clip; 0 = no cap
     max_clips: int | None = None
     output_dir: str | None = None
 
@@ -327,6 +328,8 @@ class AppConfig:
             raise ConfigError("evidence.snapshot_quality must be between 1 and 100")
         if not 0 <= int(evidence.clip_crf) <= 51:
             raise ConfigError("evidence.clip_crf must be between 0 and 51")
+        if int(evidence.clip_max_bitrate_kbps) < 0:
+            raise ConfigError("evidence.clip_max_bitrate_kbps must be >= 0")
         if evidence.max_clips is not None and int(evidence.max_clips) < 1:
             raise ConfigError("evidence.max_clips must be null or >= 1")
         unknown_event_types = sorted(
@@ -540,7 +543,7 @@ def _evidence(data: Any) -> EvidenceConfig:
     for key in ("before_seconds", "after_seconds"):
         if key in values:
             values[key] = _number(values[key], f"evidence.{key}")
-    for key in ("snapshot_quality", "clip_crf"):
+    for key in ("snapshot_quality", "clip_crf", "clip_max_bitrate_kbps"):
         if key in values:
             try:
                 values[key] = int(values[key])
