@@ -140,6 +140,14 @@ phases; this module only prepares and uploads the files and the event fields.
 - Upload failures never abort the vision run; the event is still sent without
   `video_path`.
 
+## Clip encoding
+
+Evidence clips are written as H.264 / `yuv420p` with `+faststart` so the browser can
+stream them with Range requests. The encoder resolution order is: system `ffmpeg`,
+then the bundled binary from `imageio-ffmpeg`, then OpenCV. The OpenCV fallback writes
+MPEG-4 Part 2, which Chrome/Edge cannot decode; keep ffmpeg or `imageio-ffmpeg`
+installed (it is in `requirements.txt`) if the player stays black.
+
 ## Verified end-to-end (2026-11-09)
 
 A real run was uploaded from a Windows machine through Cloudflare to the production
@@ -154,6 +162,8 @@ Nextcloud, then replayed to `lane-api`:
   `silver/fact_media/**` + `silver/fact_media_event.parquet` exported.
 - Dashboard: Hogging signals → 8 rows with **Open clip**; signed proxy returned
   `200`/`206`, bad signature and expired token `403`, missing file `404`.
+- The clips are H.264; opening the signed URL loaded video metadata (1024x768,
+  7.92 s) and the browser requested `206` ranges.
 
 ## Security
 

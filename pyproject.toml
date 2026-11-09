@@ -29,6 +29,7 @@ dependencies = [
     "pandas>=2.0",
     "PyYAML>=6.0",
     "requests>=2.31",
+    "imageio-ffmpeg>=0.5",
 ]
 
 [project.optional-dependencies]

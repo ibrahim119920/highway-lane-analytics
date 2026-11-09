@@ -211,6 +211,24 @@ def _write_snapshot(
     )
 
 
+def _ffmpeg_exe() -> str | None:
+    """Locate ffmpeg, preferring the system binary and then imageio's wheel.
+
+    ``imageio-ffmpeg`` ships a static ffmpeg with libx264, so a Windows/Colab
+    install without a system ffmpeg still produces browser-playable H.264 clips
+    instead of falling back to OpenCV's MPEG-4 Part 2 writer.
+    """
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:  # pragma: no cover - depends on the optional binary wheel
+        import imageio_ffmpeg  # type: ignore
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
 def _write_clip_ffmpeg(
     video: Path,
     start_s: float,
@@ -221,7 +239,7 @@ def _write_clip_ffmpeg(
     preset: str,
     crf: int,
 ) -> bool:
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
         return False
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -406,6 +424,12 @@ def generate_evidence(
 
     clip_paths: dict[tuple[float, float], Path] = {}
     emitted = 0
+    if use_ffmpeg and _ffmpeg_exe() is None:
+        log.warning(
+            "ffmpeg is not available; clips fall back to OpenCV MPEG-4 Part 2, "
+            "which some browsers cannot play. Install ffmpeg or imageio-ffmpeg "
+            "for H.264 clips."
+        )
     for key, (start, end, local_frame) in clip_specs.items():
         if max_clips is not None and emitted >= int(max_clips):
             break

@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from lane_analytics.evidence import (
+    _ffmpeg_exe,
     clamp_window,
     event_frame,
     event_time_s,
@@ -17,6 +18,39 @@ from lane_analytics.evidence import (
     probe_video,
     select_events,
 )
+
+
+def test_ffmpeg_exe_prefers_system_binary(monkeypatch):
+    import lane_analytics.evidence as evidence
+
+    monkeypatch.setattr(evidence.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    assert _ffmpeg_exe() == "/usr/bin/ffmpeg"
+
+
+def test_ffmpeg_exe_falls_back_to_imageio(monkeypatch):
+    import sys
+    import types
+
+    import lane_analytics.evidence as evidence
+
+    monkeypatch.setattr(evidence.shutil, "which", lambda name: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "imageio_ffmpeg",
+        types.SimpleNamespace(get_ffmpeg_exe=lambda: "C:/fake/ffmpeg.exe"),
+    )
+    assert _ffmpeg_exe() == "C:/fake/ffmpeg.exe"
+
+
+def test_ffmpeg_exe_returns_none_without_any_binary(monkeypatch):
+    import sys
+
+    import lane_analytics.evidence as evidence
+
+    monkeypatch.setattr(evidence.shutil, "which", lambda name: None)
+    # A None entry makes the import fail like a missing package.
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+    assert _ffmpeg_exe() is None
 
 
 def make_video(path: Path, *, seconds: int = 5, fps: int = 10, size=(160, 120)) -> Path:
