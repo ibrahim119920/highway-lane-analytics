@@ -128,6 +128,15 @@ def test_build_manifest_uses_camera_override_and_skips_missing_snapshot(tmp_path
     assert entries[0].thumbnail_path is None
 
 
+def test_build_manifest_requires_camera_id(tmp_path: Path):
+    index = make_index(tmp_path)
+    data = json.loads(index.read_text(encoding="utf-8"))
+    data["camera_id"] = ""
+    index.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(MediaError, match="camera_id"):
+        build_media_manifest(index)
+
+
 def test_media_id_is_stable():
     a = media_id_for("run_a", "cam_01", "clips/clip_000060.mp4")
     b = media_id_for("run_a", "cam_01", "clips/clip_000060.mp4")

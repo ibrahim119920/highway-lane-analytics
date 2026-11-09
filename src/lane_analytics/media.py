@@ -271,7 +271,12 @@ def build_media_manifest(
     run_id = str(index.get("run_id") or "").strip()
     if not run_id:
         raise MediaError(f"{path} has no run_id")
-    camera = str(camera_id or index.get("camera_id") or "unknown").strip()
+    camera = str(camera_id or index.get("camera_id") or "").strip()
+    if not camera:
+        raise MediaError(
+            f"{path} has no camera_id; pass camera_id explicitly so the Nextcloud "
+            "path cannot end up under an 'unknown' folder"
+        )
     allowed = {str(name) for name in event_types} if event_types else None
     index_dir = path.parent
     day = _event_date(index)
