@@ -650,6 +650,27 @@ media fields before replay. See
 [docs/NEXTCLOUD_MEDIA.md](docs/NEXTCLOUD_MEDIA.md) for the path layout, event
 fields, status values, and the signed-proxy plan.
 
+## Live capture from the pipeline host
+
+Kaggle cannot pull the CCTV origin fast enough (~70 kbps versus ~600 kbps needed),
+so the production notebook asks the pipeline host to record each window and then
+downloads the finished MP4 through Cloudflare:
+
+```python
+activate(source="server_capture", capture_seconds=30)
+```
+
+The host endpoint is `POST /capture` (webhook token) plus a signed
+`GET /capture/<token>`. In the notebook, `LIVE_SOURCE = "server"` is the default;
+set it to `"kaggle"` to record locally again. Manual check:
+
+```powershell
+lane-analytics capture --seconds 30 --out output/captures
+```
+
+See [docs/REMOTE_CAPTURE.md](docs/REMOTE_CAPTURE.md) for measurements, the
+allowlist, and server settings.
+
 ## CLI
 
 | Command | Purpose |
@@ -662,6 +683,7 @@ fields, status values, and the signed-proxy plan.
 | `lane-analytics evidence` | Build snapshots + clips for an existing run. |
 | `lane-analytics tune` | Fit hogging thresholds against the manual label sheet. |
 | `lane-analytics record` | Record a live HLS/HTTP stream for a fixed duration. |
+| `lane-analytics capture` | Ask the pipeline host to record a live window and download it. |
 | `lane-analytics replay` | Send precomputed artifacts to the production pipeline (Cloudflare Tunnel). |
 | `lane-analytics media upload` | Upload hogging evidence clips to Nextcloud and write a manifest. |
 | `lane-analytics pipeline-status` | Check pipeline `/health` and `/stats`. |

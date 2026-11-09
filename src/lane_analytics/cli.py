@@ -207,6 +207,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("doctor", help="check the local environment and dependencies")
 
+    capture = subparsers.add_parser(
+        "capture",
+        help="ask the pipeline host to record a live window and download it",
+    )
+    capture.add_argument("--seconds", type=float, default=30.0, help="window length")
+    capture.add_argument(
+        "--url", help="source HLS/HTTP stream (default: server's configured stream)"
+    )
+    capture.add_argument(
+        "--base",
+        help=(
+            "capture base URL (default: CAPTURE_BASE_URL, PIPELINE_BASE_URL, "
+            f"then {DEFAULT_PIPELINE_URL})"
+        ),
+    )
+    capture.add_argument(
+        "--token", help="bearer token (default: PIPELINE_WEBHOOK_TOKEN)"
+    )
+    capture.add_argument(
+        "--out", default="output/captures", help="download directory"
+    )
+    capture.add_argument("--timeout", type=float, default=420.0, help="HTTP timeout")
+
     replay = subparsers.add_parser(
         "replay", help="replay precomputed events to the production pipeline"
     )
@@ -603,6 +626,33 @@ def _record(args: argparse.Namespace) -> int:
     return 0
 
 
+def _capture(args: argparse.Namespace) -> int:
+    import json
+
+    from .capture import default_capture_base, fetch_capture
+
+    token = (
+        args.token
+        or os.getenv("PIPELINE_WEBHOOK_TOKEN")
+        or os.getenv("WEBHOOK_TOKEN")
+    )
+    if not token:
+        raise RuntimeError(
+            "a pipeline token is required; pass --token or set PIPELINE_WEBHOOK_TOKEN"
+        )
+    base = args.base or default_capture_base()
+    result = fetch_capture(
+        base,
+        token,
+        seconds=args.seconds,
+        url=args.url,
+        destination=args.out,
+        timeout=args.timeout,
+    )
+    print(json.dumps(result.as_dict(), indent=2))
+    return 0
+
+
 def _replay(args: argparse.Namespace) -> int:
     from .replay import ReplayError, replay_run, resolve_base_url, resolve_token
 
@@ -956,6 +1006,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "record":
             return _record(args)
+
+        if args.command == "capture":
+            return _capture(args)
 
         if args.command == "evidence":
             return _evidence(args)

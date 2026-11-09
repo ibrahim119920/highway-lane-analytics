@@ -8,6 +8,8 @@ The notebook only needs to clone the repository and call :func:`activate`:
 
     activate(source="live", record_seconds=300)
 
+    activate(source="server_capture", capture_seconds=30)
+
 The helper downloads or records the footage, runs the batch vision pipeline, and
 replays the artifacts to the production pipeline through the Cloudflare Tunnel. The
 token is read from the ``PIPELINE_WEBHOOK_TOKEN`` secret; the base URL defaults to
@@ -391,6 +393,10 @@ def activate(
     base_timestamps: dict[str, str] | None = None,
     stream_url: str = DEFAULT_STREAM_URL,
     record_seconds: float = 300.0,
+    capture_base: str | None = None,
+    capture_seconds: float = 30.0,
+    capture_url: str | None = None,
+    capture_timeout: float = 420.0,
     config_path: str | Path = "config/config.yaml",
     device: str | None = None,
     imgsz: int | None = None,
@@ -431,6 +437,14 @@ def activate(
         Record ``record_seconds`` of ``stream_url`` with the existing recorder,
         then process that recording.
 
+    ``"server_capture"``
+        Ask the pipeline host to record ``capture_seconds`` (the notebook cannot
+        pull the origin fast enough), download the finished MP4, and process it.
+        ``capture_base`` defaults to ``LIVE_CAPTURE_BASE_URL``, then
+        ``PIPELINE_BASE_URL``, then the production host. The event-time base is
+        the host's real recording start, so pass ``base_timestamp`` only to
+        override it.
+
     When ``replay`` is true, each run is posted to ``webhook_url`` (falling back
     to the ``PIPELINE_BASE_URL``/``WEBHOOK_URL`` secret and then the production
     Cloudflare hostname) with the ``PIPELINE_WEBHOOK_TOKEN`` secret, using
@@ -440,8 +454,10 @@ def activate(
     per-event snapshots and clips show the detection boxes. Pass ``False`` to skip it.
     """
     kind = str(source).strip().lower()
-    if kind not in {"drive_zip", "live"}:
-        raise ActivationError("source must be 'drive_zip' or 'live'")
+    if kind not in {"drive_zip", "live", "server_capture"}:
+        raise ActivationError(
+            "source must be 'drive_zip', 'live', or 'server_capture'"
+        )
 
     if device is None:
         device = _default_device()
@@ -469,6 +485,11 @@ def activate(
             "replay=True needs a pipeline token. Add PIPELINE_WEBHOOK_TOKEN to "
             "Colab/Kaggle Secrets, or pass webhook_token=..."
         )
+    if kind == "server_capture" and not webhook_token:
+        raise ActivationError(
+            "source='server_capture' needs a pipeline token. Add "
+            "PIPELINE_WEBHOOK_TOKEN to Colab/Kaggle Secrets, or pass webhook_token=..."
+        )
 
     if kind == "drive_zip":
         videos, base_map = _prepare_archive_source(
@@ -477,6 +498,32 @@ def activate(
             video_dir=video_dir,
             base_timestamp=base_timestamp,
             base_timestamps=base_timestamps,
+        )
+    elif kind == "server_capture":
+        from .capture import fetch_capture
+
+        base = (
+            capture_base
+            or _secret("LIVE_CAPTURE_BASE_URL")
+            or _secret("PIPELINE_BASE_URL")
+            or DEFAULT_BASE_URL
+        )
+        download = fetch_capture(
+            base,
+            webhook_token or "",
+            seconds=capture_seconds,
+            url=capture_url or stream_url,
+            destination=Path(video_dir) / "remote",
+            timeout=capture_timeout,
+        )
+        video = download.path
+        videos = [video]
+        # Use the host's real recording start so live event-time stays WIB.
+        base_map = {video: base_timestamp or download.started_at}
+        print(
+            f"Server capture    : {download.capture_id} "
+            f"({download.duration_s:.1f}s, {download.size_bytes / 1e6:.1f} MB, "
+            f"started {download.started_at})"
         )
     else:
         video, recorded_at = _record_live(stream_url, video_dir, record_seconds)
