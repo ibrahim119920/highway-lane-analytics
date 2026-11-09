@@ -39,7 +39,10 @@ TrafficAnalytics/events/<camera_id>/<YYYY>/<MM>/<DD>/<run_id>/
 | `NEXTCLOUD_MAX_SIMPLE_UPLOAD_MB` | `90` | guard before a single PUT |
 | `NEXTCLOUD_VERIFY_TLS` | `true` | keep true on the public host |
 
-In Colab/Kaggle use Secrets; do not commit the App Password.
+In Colab/Kaggle use Secrets; do not commit the App Password. `NextcloudConfig.from_env()`
+reads the four main variables from the environment first, then from Kaggle Secrets
+(`kaggle_secrets.UserSecretsClient`) and Colab Secrets (`google.colab.userdata`), so the
+notebook does not need to copy them into `os.environ` itself.
 
 ## CLI
 
@@ -125,13 +128,32 @@ phases; this module only prepares and uploads the files and the event fields.
 
 - `MKCOL` creates parent folders; `405` means the folder already exists.
 - `PUT` is idempotent: the same remote path is overwritten.
-- `HEAD` checks the remote size; equal size → `SKIPPED`.
+- `HEAD` checks the remote size before upload (skip when equal) **and after every
+  PUT**. `COMPLETED` is only reported when the stored `Content-Length` matches the
+  local file, so a truncated upload is not advertised to the pipeline.
+- A clip that uploads but has no thumbnail (or a failed thumbnail) becomes `PARTIAL`.
+  `FAILED` entries never contribute `video_path` to an event.
 - Retries: `408`, `425`, `429`, `5xx`, `52x`, timeouts.
 - Clips are short (about 1-5 MB). A single PUT is used; a file over the configured
   guard is rejected with a clear message instead of silently hitting a PHP/Cloudflare
   body limit. Chunked upload can be added later if longer clips are needed.
 - Upload failures never abort the vision run; the event is still sent without
   `video_path`.
+
+## Verified end-to-end (2026-11-09)
+
+A real run was uploaded from a Windows machine through Cloudflare to the production
+Nextcloud, then replayed to `lane-api`:
+
+- `run_id=km58_final`, camera `tj_priok_km58_400b`, 8 `lane_hogging_indication` clips.
+- Every PUT was followed by a matching `HEAD` (`200`, sizes 1.4-2.0 MB).
+- Nextcloud `Range: bytes=0-1023` returned `206` with `Content-Range`.
+- Replay: 412 accepted items (192 events, 219 tracks, 1 run), 0 duplicates, 8 events
+  with media fields.
+- Pipeline: 8 `fact_media` rows, 8 `fact_media_event` links, and
+  `silver/fact_media/**` + `silver/fact_media_event.parquet` exported.
+- Dashboard: Hogging signals → 8 rows with **Open clip**; signed proxy returned
+  `200`/`206`, bad signature and expired token `403`, missing file `404`.
 
 ## Security
 

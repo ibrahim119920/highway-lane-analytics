@@ -68,6 +68,29 @@ class MediaError(RuntimeError):
     """Raised when media preparation or upload cannot continue."""
 
 
+def _secret(name: str) -> str | None:
+    """Read a value from the environment, Kaggle Secrets, or Colab Secrets.
+
+    Kaggle/Colab Secrets are not exported as environment variables, so reading
+    ``os.getenv`` alone would silently skip media uploads inside a notebook.
+    """
+    value = os.getenv(name)
+    if value:
+        return value
+    try:  # pragma: no cover - only available inside Kaggle
+        from kaggle_secrets import UserSecretsClient  # type: ignore
+
+        return UserSecretsClient().get_secret(name)
+    except Exception:
+        pass
+    try:  # pragma: no cover - only available inside Colab
+        from google.colab import userdata  # type: ignore
+
+        return userdata.get(name)
+    except Exception:
+        return None
+
+
 @dataclass
 class NextcloudConfig:
     base_url: str = DEFAULT_BASE_URL
@@ -82,16 +105,16 @@ class NextcloudConfig:
     @classmethod
     def from_env(cls, **overrides: Any) -> "NextcloudConfig":
         values: dict[str, Any] = {
-            "base_url": os.getenv("NEXTCLOUD_URL", DEFAULT_BASE_URL),
-            "username": os.getenv("NEXTCLOUD_USER", ""),
-            "app_password": os.getenv("NEXTCLOUD_APP_PASSWORD", ""),
-            "root": os.getenv("NEXTCLOUD_ROOT", DEFAULT_ROOT),
-            "timeout": float(os.getenv("NEXTCLOUD_TIMEOUT", DEFAULT_TIMEOUT)),
-            "retries": int(os.getenv("NEXTCLOUD_RETRIES", "4")),
+            "base_url": _secret("NEXTCLOUD_URL") or DEFAULT_BASE_URL,
+            "username": _secret("NEXTCLOUD_USER") or "",
+            "app_password": _secret("NEXTCLOUD_APP_PASSWORD") or "",
+            "root": _secret("NEXTCLOUD_ROOT") or DEFAULT_ROOT,
+            "timeout": float(_secret("NEXTCLOUD_TIMEOUT") or DEFAULT_TIMEOUT),
+            "retries": int(_secret("NEXTCLOUD_RETRIES") or "4"),
             "max_simple_upload_mb": float(
-                os.getenv("NEXTCLOUD_MAX_SIMPLE_UPLOAD_MB", DEFAULT_MAX_SIMPLE_UPLOAD_MB)
+                _secret("NEXTCLOUD_MAX_SIMPLE_UPLOAD_MB") or DEFAULT_MAX_SIMPLE_UPLOAD_MB
             ),
-            "verify_tls": os.getenv("NEXTCLOUD_VERIFY_TLS", "true").lower()
+            "verify_tls": (_secret("NEXTCLOUD_VERIFY_TLS") or "true").lower()
             not in {"0", "false", "no"},
         }
         values.update(overrides)
@@ -478,6 +501,27 @@ class NextcloudUploader:
         except ValueError:
             return None
 
+    def verify_upload(
+        self,
+        remote_path: str,
+        expected_size: int,
+        *,
+        attempts: int | None = None,
+    ) -> bool:
+        """Confirm the stored file has the expected size.
+
+        A PUT that returns 2xx is not proof that Nextcloud stored the whole body
+        (a truncated proxy/PHP upload can still answer 201). ``COMPLETED`` is
+        only reported after this HEAD check matches.
+        """
+        total = max(1, attempts if attempts is not None else self.config.retries)
+        for attempt in range(1, total + 1):
+            if self.remote_size(remote_path) == expected_size:
+                return True
+            if attempt < total:
+                self.sleep(min(2 ** (attempt - 1), 5) * 0.5)
+        return False
+
     def upload_file(self, local_path: str | Path, remote_path: str) -> bool:
         source = Path(local_path)
         if not source.exists():
@@ -507,6 +551,11 @@ class NextcloudUploader:
                 entry.status = "SKIPPED"
             else:
                 self.upload_file(entry.local_clip, entry.video_path)
+                if not self.verify_upload(entry.video_path, entry.file_size):
+                    raise MediaError(
+                        "clip size verification failed after PUT "
+                        f"({entry.video_path})"
+                    )
                 entry.status = "COMPLETED"
         except Exception as exc:
             entry.status = "FAILED"
@@ -515,10 +564,21 @@ class NextcloudUploader:
 
         if entry.local_thumbnail and entry.thumbnail_path:
             try:
+                thumbnail_size = Path(entry.local_thumbnail).stat().st_size
                 self.upload_file(entry.local_thumbnail, entry.thumbnail_path)
+                if not self.verify_upload(entry.thumbnail_path, thumbnail_size):
+                    raise MediaError(
+                        "thumbnail size verification failed after PUT "
+                        f"({entry.thumbnail_path})"
+                    )
             except Exception as exc:
                 entry.status = "PARTIAL"
                 entry.error = f"thumbnail: {type(exc).__name__}: {exc}"
+        elif entry.status == "COMPLETED":
+            # The clip is usable, but the contract reserves COMPLETED for
+            # clip + thumbnail pairs.
+            entry.status = "PARTIAL"
+            entry.error = "thumbnail: not available"
         return entry
 
 

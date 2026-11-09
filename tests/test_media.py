@@ -171,6 +171,77 @@ def test_upload_evidence_uploads_clip_and_thumbnail(tmp_path: Path):
     assert fields["media_status"] == "COMPLETED"
     assert fields["video_path"].endswith("clip_000060.mp4")
     assert json.loads(target.read_text(encoding="utf-8"))["uploaded"] == 1
+    # Every PUT is followed by a HEAD size check.
+    media_calls = [call for call in session.calls if call[0] in {"PUT", "HEAD"}]
+    assert media_calls[0][0] == "PUT"
+    assert media_calls[1] == ("HEAD", media_calls[0][1])
+    assert media_calls[2][0] == "PUT"
+    assert media_calls[3] == ("HEAD", media_calls[2][1])
+
+
+def test_upload_is_failed_when_head_size_does_not_match(tmp_path: Path):
+    index = make_index(tmp_path)
+    config = NextcloudConfig(username="user", app_password="pass", retries=1)
+
+    class ShortClipSession(FakeSession):
+        def head(self, url, auth=None, timeout=None, verify=None):
+            if url.endswith(".mp4"):
+                self.calls.append(("HEAD", url))
+                return FakeResponse(200, {"Content-Length": "1"})
+            return super().head(url, auth=auth, timeout=timeout, verify=verify)
+
+    target = tmp_path / "media.json"
+    result = upload_evidence(
+        index,
+        config=config,
+        session=ShortClipSession(),
+        skip_existing=False,
+        manifest_path=target,
+        sleep=lambda _: None,
+    )
+
+    assert result.failed == 1
+    assert result.entries[0].status == "FAILED"
+    assert "verification" in result.entries[0].error
+    # A file that was not verified must not be advertised to the pipeline.
+    assert result.by_event_id() == {}
+    assert json.loads(target.read_text(encoding="utf-8"))["uploaded"] == 0
+
+
+def test_partial_status_when_thumbnail_verification_fails(tmp_path: Path):
+    index = make_index(tmp_path)
+    config = NextcloudConfig(username="user", app_password="pass", retries=1)
+
+    class ShortThumbSession(FakeSession):
+        def head(self, url, auth=None, timeout=None, verify=None):
+            if url.endswith(".jpg"):
+                self.calls.append(("HEAD", url))
+                return FakeResponse(200, {"Content-Length": "1"})
+            return super().head(url, auth=auth, timeout=timeout, verify=verify)
+
+    result = upload_evidence(
+        index,
+        config=config,
+        session=ShortThumbSession(),
+        skip_existing=False,
+        sleep=lambda _: None,
+    )
+    assert result.entries[0].status == "PARTIAL"
+    assert result.failed == 0
+    assert result.by_event_id()["e1"]["media_status"] == "PARTIAL"
+
+
+def test_clip_without_thumbnail_is_partial(tmp_path: Path):
+    index = make_index(tmp_path, with_thumbnail=False)
+    result = upload_evidence(
+        index,
+        config=NextcloudConfig(username="user", app_password="pass", retries=1),
+        session=FakeSession(),
+        skip_existing=False,
+        sleep=lambda _: None,
+    )
+    assert result.entries[0].status == "PARTIAL"
+    assert "thumbnail_path" not in result.by_event_id()["e1"]
 
 
 def test_upload_retries_transient_put(tmp_path: Path):
@@ -255,6 +326,23 @@ def test_config_from_environment(monkeypatch):
     assert config.username == "lane-upload"
     assert config.root == "TrafficAnalytics"
     assert config.verify_tls is False
+    config.validate()
+
+
+def test_config_from_env_reads_notebook_secrets(monkeypatch):
+    """Kaggle/Colab Secrets are not environment variables."""
+    import lane_analytics.media as media
+
+    values = {
+        "NEXTCLOUD_URL": "https://cloud.example",
+        "NEXTCLOUD_USER": "lane-upload",
+        "NEXTCLOUD_APP_PASSWORD": "from-secret",
+    }
+    monkeypatch.delenv("NEXTCLOUD_URL", raising=False)
+    monkeypatch.setattr(media, "_secret", values.get)
+    config = media.NextcloudConfig.from_env()
+    assert config.username == "lane-upload"
+    assert config.app_password == "from-secret"
     config.validate()
 
 
