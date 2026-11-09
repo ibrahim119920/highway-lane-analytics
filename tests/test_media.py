@@ -104,6 +104,33 @@ def make_index(tmp_path: Path, *, with_thumbnail: bool = True) -> Path:
     return path
 
 
+def test_config_strips_whitespace_from_secrets(monkeypatch):
+    monkeypatch.setenv("NEXTCLOUD_URL", " https://cloud.example/ ")
+    monkeypatch.setenv("NEXTCLOUD_USER", " lane-upload\n")
+    monkeypatch.setenv("NEXTCLOUD_APP_PASSWORD", "  secret  \n")
+    monkeypatch.setenv("NEXTCLOUD_ROOT", " TrafficAnalytics ")
+
+    config = NextcloudConfig.from_env()
+
+    assert config.base_url == "https://cloud.example"
+    assert config.username == "lane-upload"
+    assert config.app_password == "secret"
+    assert config.root == "TrafficAnalytics"
+
+
+def test_auth_failure_message_points_at_credentials():
+    class RejectSession:
+        def request(self, *args, **kwargs):
+            return FakeResponse(401, text="<s:message>No public access</s:message>")
+
+    uploader = NextcloudUploader(
+        NextcloudConfig(username="u", app_password="p", retries=1),
+        session=RejectSession(),
+    )
+    with pytest.raises(MediaError, match="credentials"):
+        uploader.ensure_dir("TrafficAnalytics")
+
+
 def test_build_manifest_filters_and_dedupes_clips(tmp_path: Path):
     index = make_index(tmp_path)
     entries = build_media_manifest(index, root="TrafficAnalytics")
@@ -331,7 +358,8 @@ def test_config_from_environment(monkeypatch):
     monkeypatch.setenv("NEXTCLOUD_ROOT", "TrafficAnalytics")
     monkeypatch.setenv("NEXTCLOUD_VERIFY_TLS", "false")
     config = NextcloudConfig.from_env()
-    assert config.base_url == "https://cloud.example/"
+    # Trailing slashes are normalised away so DAV URLs never contain "//".
+    assert config.base_url == "https://cloud.example"
     assert config.username == "lane-upload"
     assert config.root == "TrafficAnalytics"
     assert config.verify_tls is False

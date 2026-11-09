@@ -102,6 +102,15 @@ class NextcloudConfig:
     max_simple_upload_mb: float = DEFAULT_MAX_SIMPLE_UPLOAD_MB
     verify_tls: bool = True
 
+    def __post_init__(self) -> None:
+        # Kaggle/Colab secrets are often pasted with a trailing newline or space.
+        # Basic auth compares the exact bytes, so a stray character turns into a
+        # misleading 401 ("AppAPIAuth has not passed").
+        self.base_url = str(self.base_url).strip().rstrip("/")
+        self.username = str(self.username).strip()
+        self.app_password = str(self.app_password).strip()
+        self.root = str(self.root).strip().strip("/")
+
     @classmethod
     def from_env(cls, **overrides: Any) -> "NextcloudConfig":
         values: dict[str, Any] = {
@@ -459,6 +468,14 @@ class NextcloudUploader:
                         f"{method} {url} -> {response.status_code}"
                     )
                 else:
+                    if response.status_code in (401, 403):
+                        raise MediaError(
+                            f"{method} {url} -> {response.status_code}: Nextcloud "
+                            "rejected the credentials. Check NEXTCLOUD_USER and "
+                            "NEXTCLOUD_APP_PASSWORD (the app password may have been "
+                            "rotated); whitespace is already stripped. "
+                            f"{_response_text(response)}"
+                        )
                     raise MediaError(
                         f"{method} {url} -> {response.status_code}: "
                         f"{_response_text(response)}"
