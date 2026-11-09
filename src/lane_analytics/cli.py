@@ -213,7 +213,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capture.add_argument("--seconds", type=float, default=30.0, help="window length")
     capture.add_argument(
-        "--url", help="source HLS/HTTP stream (default: server's configured stream)"
+        "--url",
+        help="source HLS/HTTP stream (default: the production CCTV stream)",
     )
     capture.add_argument(
         "--base",
@@ -629,7 +630,7 @@ def _record(args: argparse.Namespace) -> int:
 def _capture(args: argparse.Namespace) -> int:
     import json
 
-    from .capture import default_capture_base, fetch_capture
+    from .capture import DEFAULT_STREAM_URL, default_capture_base, fetch_capture
 
     token = (
         args.token
@@ -645,7 +646,7 @@ def _capture(args: argparse.Namespace) -> int:
         base,
         token,
         seconds=args.seconds,
-        url=args.url,
+        url=args.url or DEFAULT_STREAM_URL,
         destination=args.out,
         timeout=args.timeout,
     )

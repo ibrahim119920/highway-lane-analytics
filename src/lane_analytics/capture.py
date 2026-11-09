@@ -21,6 +21,9 @@ from .utils import ensure_dir
 
 DEFAULT_SECONDS = 30.0
 DEFAULT_TIMEOUT = 420.0
+DEFAULT_STREAM_URL = (
+    "https://pub2.hk-opt.com/LiveApp/streams/501264524429471982550467.m3u8"
+)
 
 
 class CaptureError(RuntimeError):

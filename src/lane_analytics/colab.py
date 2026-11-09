@@ -29,15 +29,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from .capture import DEFAULT_STREAM_URL
 from .config import load_config
 from .replay import DEFAULT_BASE_URL, DEFAULT_SOURCE, ReplayResult, replay_run
 from .utils import ensure_dir
 
 log = logging.getLogger(__name__)
 
-DEFAULT_STREAM_URL = (
-    "https://pub2.hk-opt.com/LiveApp/streams/501264524429471982550467.m3u8"
-)
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".avi", ".m4v", ".ts"}
 _TIMESTAMP_PATTERNS = (
     re.compile(

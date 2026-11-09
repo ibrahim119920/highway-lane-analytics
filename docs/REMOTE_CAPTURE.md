@@ -75,3 +75,48 @@ Server settings (all optional):
 
 The download token is signed with `MEDIA_PROXY_SECRET` and carries
 `kind=capture`, so it cannot be reused against `/media/<token>`.
+
+## Kaggle smoke test (one cell)
+
+Add `PIPELINE_WEBHOOK_TOKEN` to Kaggle Secrets, then paste this into a cell with
+Internet enabled. It records 20 s on the host, times the POST, downloads the MP4,
+checks the size, and prints the measured throughput.
+
+```python
+import time
+import requests
+from kaggle_secrets import UserSecretsClient
+
+BASE = "https://lane-api.syaifudin-fam.my.id"
+URL = "https://pub2.hk-opt.com/LiveApp/streams/501264524429471982550467.m3u8"
+TOKEN = UserSecretsClient().get_secret("PIPELINE_WEBHOOK_TOKEN")
+
+t0 = time.time()
+r = requests.post(f"{BASE}/capture", json={"url": URL, "seconds": 20},
+                  headers={"Authorization": f"Bearer {TOKEN}"}, timeout=180)
+r.raise_for_status()
+meta = r.json()
+print("recorded in", round(time.time() - t0, 1), "s ->", meta["duration_s"], "s,",
+      round(meta["size_bytes"] / 1e6, 2), "MB, started", meta["started_at"])
+
+t0 = time.time()
+with requests.get(meta["download_url"], stream=True, timeout=180) as resp:
+    resp.raise_for_status()
+    data = resp.content
+elapsed = time.time() - t0
+assert len(data) == meta["size_bytes"], (len(data), meta["size_bytes"])
+print("downloaded", round(len(data) / 1e6, 2), "MB in", round(elapsed, 1), "s ->",
+      round(len(data) / 1e6 / elapsed, 2), "MB/s")
+```
+
+Measured from a Windows client on 2026-11-09: 15 s window -> 9.8 s POST, 1.76 MB,
+1.5 s download (~1.2 MB/s). A concurrent request returns `409`.
+
+## Deployment note
+
+`/opt/lane-pipeline` is not a git clone. The receiver runs from
+`WorkingDirectory=/opt/lane-pipeline` with `/opt/lane-pipeline/.venv`. Deploy by
+copying `src/lane_pipeline/capture.py`, `src/lane_pipeline/config.py`, and
+`src/lane_pipeline/receiver/app.py`, then `systemctl restart lane-receiver`.
+Captures land in `PIPELINE_DATA_DIR/captures` (`/var/lib/lane-pipeline/captures`).
+
