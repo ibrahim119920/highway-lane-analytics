@@ -301,3 +301,47 @@ def test_generate_evidence_skips_events_without_time(tmp_path: Path):
     assert result.skipped_events == 1
     assert result.snapshot_count == 0
     assert result.clip_count == 0
+
+
+def test_generate_evidence_parallel_workers_match_sequential(tmp_path: Path):
+    video = make_video(tmp_path / "clip.mp4", seconds=5, fps=10)
+    events_path = write_events(
+        tmp_path / "events.jsonl",
+        [
+            make_event(0.7, "lane_enter"),
+            make_event(1.9, "lane_enter"),
+            make_event(3.1, "lane_enter"),
+            make_event(4.3, "lane_enter"),
+        ],
+    )
+
+    sequential = generate_evidence(
+        run_id="run_seq",
+        events_path=events_path,
+        video_path=video,
+        output_dir=tmp_path / "seq",
+        before_seconds=0.5,
+        after_seconds=0.5,
+        use_ffmpeg=False,
+        clip_workers=1,
+    )
+    parallel = generate_evidence(
+        run_id="run_par",
+        events_path=events_path,
+        video_path=video,
+        output_dir=tmp_path / "par",
+        before_seconds=0.5,
+        after_seconds=0.5,
+        use_ffmpeg=False,
+        clip_workers=4,
+    )
+
+    assert parallel.event_count == sequential.event_count == 4
+    assert parallel.snapshot_count == sequential.snapshot_count == 4
+    assert parallel.clip_count == sequential.clip_count == 4
+    assert parallel.errors == []
+    seq_index = json.loads(Path(sequential.index_path).read_text(encoding="utf-8"))
+    par_index = json.loads(Path(parallel.index_path).read_text(encoding="utf-8"))
+    assert [entry["clip"] for entry in seq_index["events"]] == [
+        entry["clip"] for entry in par_index["events"]
+    ]

@@ -21,9 +21,13 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import re
 import shutil
+import threading
+import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -72,6 +76,129 @@ class ActivationResult:
 
     def __repr__(self) -> str:  # pragma: no cover - display helper
         return f"ActivationResult(source={self.source!r}, processed={self.processed}, failed={self.failed})"
+
+
+@dataclass
+class PostJob:
+    """One window's media upload + replay, run off the live critical path."""
+
+    item: dict[str, Any]
+    run_id: str = ""
+    upload: Callable[[], Any] | None = None
+    replay: Callable[[Any], Any] | None = None
+    upload_future: Any = None
+    replay_result: Any = None
+    error: str = ""
+    done: threading.Event = field(default_factory=threading.Event)
+
+
+class PostQueue:
+    """Upload and replay windows in the background.
+
+    Uploads for consecutive windows run in parallel (``upload_workers``), while a
+    single replay worker keeps webhook delivery ordered by window index. An
+    upload failure is recorded on the item and the window is still replayed
+    without media fields, so a Nextcloud outage never loses events.
+
+    Call :meth:`drain` before the notebook cell ends; otherwise the interpreter
+    can exit while uploads are still in flight.
+    """
+
+    def __init__(self, *, upload_workers: int = 2) -> None:
+        self._upload_pool = ThreadPoolExecutor(
+            max_workers=max(1, int(upload_workers)),
+            thread_name_prefix="post-upload",
+        )
+        self._replay_queue: queue.Queue[PostJob | None] = queue.Queue()
+        self._jobs: list[PostJob] = []
+        self._lock = threading.Lock()
+        self._closed = False
+        self._replay_thread = threading.Thread(
+            target=self._replay_loop, name="post-replay", daemon=True
+        )
+        self._replay_thread.start()
+
+    @property
+    def jobs(self) -> list[PostJob]:
+        return list(self._jobs)
+
+    def pending(self) -> int:
+        return sum(1 for job in self._jobs if not job.done.is_set())
+
+    def submit(
+        self,
+        item: dict[str, Any],
+        *,
+        run_id: str = "",
+        upload: Callable[[], Any] | None = None,
+        replay: Callable[[Any], Any] | None = None,
+    ) -> PostJob:
+        job = PostJob(item=item, run_id=run_id, upload=upload, replay=replay)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("PostQueue is already closed")
+            job.upload_future = self._upload_pool.submit(self._run_upload, job)
+            self._jobs.append(job)
+            # Enqueue in submission (window) order; the single replay worker
+            # waits for this job's upload before posting it.
+            self._replay_queue.put(job)
+        return job
+
+    def _run_upload(self, job: PostJob) -> Any:
+        if job.upload is None:
+            return None
+        try:
+            media = job.upload()
+        except Exception as exc:  # upload failure must not lose the run
+            log.warning("Media upload failed for %s: %s", job.run_id, exc)
+            job.item["media_error"] = f"{type(exc).__name__}: {exc}"
+            return None
+        job.item["media"] = media.as_dict() if hasattr(media, "as_dict") else media
+        return media
+
+    def _replay_loop(self) -> None:
+        while True:
+            job = self._replay_queue.get()
+            if job is None:
+                self._replay_queue.task_done()
+                return
+            try:
+                media = job.upload_future.result()
+                if job.replay is not None:
+                    replay_result = job.replay(media)
+                    job.replay_result = replay_result
+                    job.item["replay"] = (
+                        replay_result.as_dict()
+                        if hasattr(replay_result, "as_dict")
+                        else replay_result
+                    )
+                job.item.setdefault("status", "ok")
+            except Exception as exc:
+                log.exception("Replay failed for %s", job.run_id)
+                job.error = f"{type(exc).__name__}: {exc}"
+                job.item["status"] = "error"
+                job.item["error"] = job.error
+            finally:
+                job.done.set()
+                self._replay_queue.task_done()
+
+    def drain(self, timeout: float | None = None) -> list[PostJob]:
+        """Wait for every submitted window, then stop the worker threads."""
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        for job in list(self._jobs):
+            remaining = (
+                None if deadline is None else max(0.0, deadline - time.monotonic())
+            )
+            job.done.wait(remaining)
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                self._replay_queue.put(None)
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        self._replay_thread.join(remaining)
+        self._upload_pool.shutdown(wait=False)
+        return list(self._jobs)
+
 
 
 # --------------------------------------------------------------- secrets
@@ -385,6 +512,7 @@ def activate(
     *,
     drive_url: str | None = None,
     zip_path: str | Path | None = None,
+    video_path: str | Path | None = None,
     video_dir: str | Path = "data/raw",
     max_videos: int | None = None,
     base_timestamp: str | None = None,
@@ -421,6 +549,7 @@ def activate(
     window_index: int | None = None,
     window_count: int | None = None,
     run_id: str | None = None,
+    post_queue: PostQueue | None = None,
 ) -> ActivationResult:
     """Prepare footage, run the batch pipeline, and replay it to the webhook.
 
@@ -443,6 +572,16 @@ def activate(
         the host's real recording start, so pass ``base_timestamp`` only to
         override it.
 
+    ``"file"``
+        Process an existing ``video_path``. The notebook uses this with a
+        prefetched ``fetch_capture`` download so window N+1 is recorded while
+        window N is processed.
+
+    Pass ``post_queue=PostQueue()`` to run the Nextcloud upload and webhook replay
+    in the background; :meth:`PostQueue.drain` then collects the results. Without
+    it, upload and replay stay synchronous and ``ActivationResult`` is complete
+    when :func:`activate` returns.
+
     When ``replay`` is true, each run is posted to ``webhook_url`` (falling back
     to the ``PIPELINE_BASE_URL``/``WEBHOOK_URL`` secret and then the production
     Cloudflare hostname) with the ``PIPELINE_WEBHOOK_TOKEN`` secret, using
@@ -452,9 +591,9 @@ def activate(
     per-event snapshots and clips show the detection boxes. Pass ``False`` to skip it.
     """
     kind = str(source).strip().lower()
-    if kind not in {"drive_zip", "live", "server_capture"}:
+    if kind not in {"drive_zip", "live", "server_capture", "file"}:
         raise ActivationError(
-            "source must be 'drive_zip', 'live', or 'server_capture'"
+            "source must be 'drive_zip', 'live', 'server_capture', or 'file'"
         )
 
     if device is None:
@@ -522,6 +661,18 @@ def activate(
             f"Server capture    : {download.capture_id} "
             f"({download.duration_s:.1f}s, {download.size_bytes / 1e6:.1f} MB, "
             f"started {download.started_at})"
+        )
+    elif kind == "file":
+        if video_path is None:
+            raise ActivationError("source='file' needs video_path=...")
+        video = Path(video_path)
+        if not video.exists() or video.stat().st_size == 0:
+            raise ActivationError(f"video_path is missing or empty: {video}")
+        videos = [video]
+        base_map = (
+            {video: base_timestamp}
+            if base_timestamp
+            else plan_base_timestamps([video])
         )
     else:
         video, recorded_at = _record_live(stream_url, video_dir, record_seconds)
@@ -598,57 +749,83 @@ def activate(
             item["evidence_clips"] = batch.evidence_clips
             item["evidence_dir"] = batch.evidence_dir
 
-            media_by_event = None
-            if upload_media:
-                try:
-                    from .media import upload_evidence
+            def _upload_media(
+                _batch: Any = batch, _run_id: str = effective_run_id
+            ) -> Any:
+                from .media import upload_evidence
 
-                    manifest_target = None
-                    if media_manifest_path:
-                        base = Path(media_manifest_path)
-                        manifest_target = (
-                            base
-                            if base.suffix.lower() == ".json"
-                            else base / f"{effective_run_id}_media.json"
-                        )
-                    media_result = upload_evidence(
-                        batch.evidence_index or "",
-                        camera_id=batch.camera_id,
-                        root=media_root,
-                        event_types=media_event_types,
-                        dry_run=dry_run,
-                        manifest_path=manifest_target,
+                manifest_target = None
+                if media_manifest_path:
+                    base = Path(media_manifest_path)
+                    manifest_target = (
+                        base
+                        if base.suffix.lower() == ".json"
+                        else base / f"{_run_id}_media.json"
                     )
-                    media_by_event = media_result.by_event_id()
-                    item["media"] = media_result.as_dict()
-                except Exception as exc:  # media failure must not lose the run
-                    log.warning("Media upload failed for %s: %s", effective_run_id, exc)
-                    item["media_error"] = f"{type(exc).__name__}: {exc}"
+                return upload_evidence(
+                    _batch.evidence_index or "",
+                    camera_id=_batch.camera_id,
+                    root=media_root,
+                    event_types=media_event_types,
+                    dry_run=dry_run,
+                    manifest_path=manifest_target,
+                )
 
-            if replay:
-                replay_result = replay_run(
-                    batch.events_path,
-                    tracks_path=batch.tracks_path,
-                    summary_path=str(Path(batch.reports_dir or "") / "summary.json")
-                    if batch.reports_dir
+            def _replay(
+                media_result: Any,
+                _batch: Any = batch,
+                _run_id: str = effective_run_id,
+            ) -> Any:
+                media_fields = (
+                    media_result.by_event_id() if media_result is not None else None
+                )
+                return replay_run(
+                    _batch.events_path,
+                    tracks_path=_batch.tracks_path,
+                    summary_path=str(Path(_batch.reports_dir or "") / "summary.json")
+                    if _batch.reports_dir
                     else None,
-                    config_path=str(Path(batch.reports_dir or "") / "run_config.json")
-                    if batch.reports_dir
+                    config_path=str(Path(_batch.reports_dir or "") / "run_config.json")
+                    if _batch.reports_dir
                     else None,
                     url=webhook_url,
                     token=webhook_token,
-                    run_id=effective_run_id,
+                    run_id=_run_id,
                     source=replay_source or DEFAULT_SOURCE,
                     speed=speed,
                     window_seconds=window_seconds,
                     retries=retries,
                     health_attempts=health_attempts,
                     health_delay=health_delay,
-                    media_manifest=media_by_event,
+                    media_manifest=media_fields,
                     dry_run=dry_run,
                     skip_health_check=skip_health_check,
                 )
-                item["replay"] = replay_result.as_dict()
+
+            if post_queue is not None:
+                # Capture and processing of the next window start as soon as
+                # this call returns; upload + replay finish in the background.
+                post_queue.submit(
+                    item,
+                    run_id=effective_run_id,
+                    upload=_upload_media if upload_media else None,
+                    replay=_replay if replay else None,
+                )
+            else:
+                media_result = None
+                if upload_media:
+                    try:
+                        media_result = _upload_media()
+                        item["media"] = media_result.as_dict()
+                    except Exception as exc:  # media failure must not lose the run
+                        log.warning(
+                            "Media upload failed for %s: %s", effective_run_id, exc
+                        )
+                        item["media_error"] = f"{type(exc).__name__}: {exc}"
+
+                if replay:
+                    replay_result = _replay(media_result)
+                    item["replay"] = replay_result.as_dict()
             item["status"] = "ok"
         except Exception as exc:  # keep going with the remaining clips
             log.exception("Activation failed for %s", video)

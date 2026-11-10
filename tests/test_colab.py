@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +12,7 @@ import pytest
 
 from lane_analytics.colab import (
     ActivationError,
+    PostQueue,
     _drive_file_id,
     _secret,
     activate,
@@ -272,3 +275,195 @@ def test_activate_accepts_session_and_run_id(tmp_path: Path, monkeypatch):
     assert captured["session_id"] == "sess_01"
     assert captured["window_index"] == 2
     assert captured["window_count"] == 5
+
+
+class FakeMediaResult:
+    def by_event_id(self):
+        return {"e1": {"media_id": "m1", "video_path": "clips/a.mp4"}}
+
+    def as_dict(self):
+        return {"uploaded": 1, "failed": 0}
+
+
+def make_batch(tmp_path: Path) -> SimpleNamespace:
+    index = tmp_path / "index.json"
+    index.write_text("{}", encoding="utf-8")
+    return SimpleNamespace(
+        total_vehicles=1,
+        total_events=1,
+        hogging_events=1,
+        evidence_events=1,
+        evidence_snapshots=1,
+        evidence_clips=1,
+        evidence_dir=str(tmp_path / "evidence"),
+        evidence_index=str(index),
+        camera_id="cam_01",
+        events_path=str(tmp_path / "events.jsonl"),
+        tracks_path=str(tmp_path / "tracks.jsonl"),
+        reports_dir=str(tmp_path / "reports"),
+    )
+
+
+def test_post_queue_orders_replay_and_survives_upload_failure():
+    seen = []
+
+    def upload_fail():
+        time.sleep(0.05)
+        raise RuntimeError("nextcloud down")
+
+    def upload_ok():
+        return FakeMediaResult()
+
+    def replay_first(media):
+        seen.append((0, media))
+
+    def replay_second(media):
+        seen.append((1, media))
+
+    items = [{"window_index": 0}, {"window_index": 1}]
+    queue = PostQueue(upload_workers=2)
+    queue.submit(items[0], run_id="w0", upload=upload_fail, replay=replay_first)
+    queue.submit(items[1], run_id="w1", upload=upload_ok, replay=replay_second)
+    jobs = queue.drain(timeout=10)
+
+    # Replay is ordered by submission even though the failed upload ran first.
+    assert [window for window, _ in seen] == [0, 1]
+    assert seen[0][1] is None  # failed upload still replays, without media
+    assert seen[1][1] is not None
+    assert jobs[0].item["media_error"].startswith("RuntimeError")
+    assert jobs[0].item["status"] == "ok"
+    assert jobs[1].item["media"] == {"uploaded": 1, "failed": 0}
+    assert all(job.done.is_set() for job in jobs)
+
+
+def test_post_queue_marks_replay_failure_on_item():
+    def fail(_media):
+        raise RuntimeError("webhook down")
+
+    item = {"window_index": 0}
+    queue = PostQueue(upload_workers=1)
+    queue.submit(item, run_id="w0", replay=fail)
+    queue.drain(timeout=10)
+
+    assert item["status"] == "error"
+    assert "webhook down" in item["error"]
+
+
+def test_activate_processes_a_prefetched_file(tmp_path: Path, monkeypatch):
+    video = tmp_path / "cap_0001.mp4"
+    video.write_bytes(b"fake-video")
+    captured: dict = {}
+
+    def fake_process_one(video_path, **kwargs):
+        captured["video"] = Path(video_path)
+        captured.update(kwargs)
+        return make_batch(tmp_path)
+
+    monkeypatch.setattr("lane_analytics.colab._process_one", fake_process_one)
+
+    result = activate(
+        source="file",
+        video_path=video,
+        base_timestamp="2026-11-10T19:00:00",
+        replay=False,
+        video_dir=tmp_path / "raw",
+    )
+
+    assert result.processed == 1
+    assert captured["video"] == video
+    assert captured["base_timestamp"] == "2026-11-10T19:00:00"
+    assert result.videos[0]["run_id"] == "cap_0001"
+
+
+def test_activate_file_source_requires_existing_video(tmp_path: Path):
+    with pytest.raises(ActivationError, match="video_path"):
+        activate(source="file", video_path=tmp_path / "missing.mp4", replay=False)
+
+
+def test_activate_post_queue_keeps_per_video_context(tmp_path: Path, monkeypatch):
+    archive = tmp_path / "videos.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("a.mp4", "dummy-a")
+        handle.writestr("b.mp4", "dummy-b")
+
+    seen: list[tuple[str, str]] = []
+
+    def fake_process_one(video_path, **kwargs):
+        stem = Path(video_path).stem
+        batch = make_batch(tmp_path)
+        batch.events_path = str(tmp_path / f"{stem}.jsonl")
+        batch.tracks_path = str(tmp_path / f"{stem}_tracks.jsonl")
+        return batch
+
+    def fake_replay(path, **kwargs):
+        seen.append((kwargs["run_id"], path))
+        return SimpleNamespace(as_dict=lambda: {})
+
+    monkeypatch.setattr("lane_analytics.colab._process_one", fake_process_one)
+    monkeypatch.setattr("lane_analytics.colab.replay_run", fake_replay)
+
+    queue = PostQueue(upload_workers=2)
+    activate(
+        source="drive_zip",
+        zip_path=archive,
+        video_dir=tmp_path / "raw",
+        replay=True,
+        webhook_url="https://lane-api.example",
+        webhook_token="token",
+        post_queue=queue,
+    )
+    queue.drain(timeout=10)
+
+    # Each queued replay must use its own video's batch (no late binding).
+    assert seen == [
+        ("a", str(tmp_path / "a.jsonl")),
+        ("b", str(tmp_path / "b.jsonl")),
+    ]
+
+
+def test_activate_post_queue_defers_upload_and_replay(tmp_path: Path, monkeypatch):
+    archive = tmp_path / "videos.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("clip.mp4", "dummy")
+
+    release = threading.Event()
+    replay_calls: list = []
+
+    def fake_process_one(video_path, **kwargs):
+        return make_batch(tmp_path)
+
+    def fake_upload(*args, **kwargs):
+        release.wait(5)
+        return FakeMediaResult()
+
+    def fake_replay(*args, **kwargs):
+        replay_calls.append(kwargs.get("media_manifest"))
+        return SimpleNamespace(as_dict=lambda: {"events_sent": 1})
+
+    monkeypatch.setattr("lane_analytics.colab._process_one", fake_process_one)
+    monkeypatch.setattr("lane_analytics.media.upload_evidence", fake_upload)
+    monkeypatch.setattr("lane_analytics.colab.replay_run", fake_replay)
+
+    queue = PostQueue(upload_workers=1)
+    result = activate(
+        source="drive_zip",
+        zip_path=archive,
+        video_dir=tmp_path / "raw",
+        replay=True,
+        webhook_url="https://lane-api.example",
+        webhook_token="token",
+        upload_media=True,
+        post_queue=queue,
+    )
+
+    item = result.videos[0]
+    assert item["status"] == "ok"
+    assert "media" not in item
+    assert "replay" not in item
+
+    release.set()
+    queue.drain(timeout=10)
+
+    assert item["media"] == {"uploaded": 1, "failed": 0}
+    assert item["replay"] == {"events_sent": 1}
+    assert replay_calls == [{"e1": {"media_id": "m1", "video_path": "clips/a.mp4"}}]

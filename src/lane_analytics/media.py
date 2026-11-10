@@ -36,7 +36,9 @@ import json
 import logging
 import os
 import posixpath
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -52,6 +54,7 @@ DEFAULT_ROOT = "TrafficAnalytics"
 DEFAULT_EVENT_TYPES = ("lane_hogging_indication",)
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_MAX_SIMPLE_UPLOAD_MB = 90.0
+DEFAULT_UPLOAD_WORKERS = 4
 RETRY_STATUS = {408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
 READY_STATUSES = {"COMPLETED", "PARTIAL", "SKIPPED"}
 
@@ -204,6 +207,10 @@ class MediaUploadResult:
     @property
     def skipped(self) -> int:
         return sum(1 for entry in self.entries if entry.status == "SKIPPED")
+
+    @property
+    def partial(self) -> int:
+        return sum(1 for entry in self.entries if entry.status == "PARTIAL")
 
     @property
     def failed(self) -> int:
@@ -413,8 +420,30 @@ class NextcloudUploader:
     ) -> None:
         config.validate()
         self.config = config
-        self.session = session or requests.Session()
+        # ``requests.Session`` is not documented as thread-safe, so every upload
+        # worker gets its own session. An explicitly supplied session (tests,
+        # callers that preconfigure auth) is shared instead.
+        self._shared_session = session
+        self._session_local = threading.local()
         self.sleep = sleep
+        # Directories already created in this process. Without this cache every
+        # file re-issues one MKCOL per path level (~7 per file), which used to
+        # dominate a window's upload time over a high-latency tunnel.
+        self._directories: set[str] = set()
+        self._directories_lock = threading.Lock()
+
+    def _get_session(self) -> requests.Session:
+        if self._shared_session is not None:
+            return self._shared_session
+        session = getattr(self._session_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            self._session_local.session = session
+        return session
+
+    @property
+    def session(self) -> requests.Session:
+        return self._get_session()
 
     # ---------------------------------------------------------------- helpers
     def _base(self) -> str:
@@ -446,7 +475,7 @@ class NextcloudUploader:
         last_error: Exception | None = None
         for attempt in range(1, max(1, self.config.retries) + 1):
             try:
-                response = self.session.request(
+                response = self._get_session().request(
                     method,
                     url,
                     data=data,
@@ -493,19 +522,24 @@ class NextcloudUploader:
         raise MediaError(f"{method} {url} failed after retries: {last_error}")
 
     def ensure_dir(self, remote_dir: str) -> None:
+        """Create every missing level of ``remote_dir``, once per process."""
         parts = [
             part
             for part in remote_dir.replace("\\", "/").strip("/").split("/")
             if part
         ]
-        current = ""
-        for part in parts:
-            current = f"{current}/{part}" if current else part
-            self._request("MKCOL", self.dav_url(current), expected=(201, 405))
+        with self._directories_lock:
+            current = ""
+            for part in parts:
+                current = f"{current}/{part}" if current else part
+                if current in self._directories:
+                    continue
+                self._request("MKCOL", self.dav_url(current), expected=(201, 405))
+                self._directories.add(current)
 
     def remote_size(self, remote_path: str) -> int | None:
         try:
-            response = self.session.head(
+            response = self._get_session().head(
                 self.dav_url(remote_path),
                 auth=(self.config.username, self.config.app_password),
                 timeout=self.config.timeout,
@@ -611,6 +645,16 @@ def _response_text(response: requests.Response, limit: int = 300) -> str:
         return ""
 
 
+def _upload_workers(value: int | None = None) -> int:
+    if value is not None:
+        return max(1, int(value))
+    raw = _secret("NEXTCLOUD_UPLOAD_WORKERS")
+    try:
+        return max(1, int(raw)) if raw else DEFAULT_UPLOAD_WORKERS
+    except ValueError:
+        return DEFAULT_UPLOAD_WORKERS
+
+
 def upload_evidence(
     index_path: str | Path,
     *,
@@ -622,9 +666,15 @@ def upload_evidence(
     skip_existing: bool = True,
     manifest_path: str | Path | None = None,
     session: requests.Session | None = None,
+    workers: int | None = None,
     sleep=time.sleep,
 ) -> MediaUploadResult:
-    """Build, upload (unless dry-run), and optionally save the media manifest."""
+    """Build, upload (unless dry-run), and optionally save the media manifest.
+
+    Files are uploaded with ``workers`` threads (default from
+    ``NEXTCLOUD_UPLOAD_WORKERS``, 4). Each file's PUT + size verification stays
+    sequential, so ``COMPLETED`` still means "PUT succeeded and HEAD matched".
+    """
     entries = build_media_manifest(
         index_path,
         camera_id=camera_id,
@@ -662,8 +712,38 @@ def upload_evidence(
     )
     for remote_dir in dict.fromkeys(dirs):
         uploader.ensure_dir(remote_dir)
-    for entry in entries:
+
+    def _upload_entry(entry: MediaEntry) -> None:
+        file_started = time.perf_counter()
         uploader.upload_entry(entry, skip_existing=skip_existing)
+        log.debug(
+            "Media %s %s in %.2fs",
+            entry.media_id,
+            entry.status,
+            time.perf_counter() - file_started,
+        )
+
+    worker_count = min(_upload_workers(workers), max(1, len(entries)))
+    started = time.perf_counter()
+    if worker_count > 1:
+        with ThreadPoolExecutor(
+            max_workers=worker_count, thread_name_prefix="media-upload"
+        ) as pool:
+            list(pool.map(_upload_entry, entries))
+    else:
+        for entry in entries:
+            _upload_entry(entry)
+    log.info(
+        "Media upload: %d files (%d uploaded, %d partial, %d skipped, %d failed) "
+        "in %.1fs with %d worker(s)",
+        len(entries),
+        result.uploaded,
+        result.partial,
+        result.skipped,
+        result.failed,
+        time.perf_counter() - started,
+        worker_count,
+    )
 
     if manifest_path:
         result.manifest_path = save_media_manifest(result, manifest_path)

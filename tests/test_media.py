@@ -397,3 +397,79 @@ def test_load_manifest_maps_duration_to_clip_duration(tmp_path: Path):
     mapping = load_media_manifest(target)
     assert mapping["e1"]["clip_duration_s"] == 8.0
     assert mapping["e1"]["media_status"] == "COMPLETED"
+
+
+def make_multi_index(tmp_path: Path, *, count: int = 4) -> Path:
+    evidence = tmp_path / "evidence"
+    clips = evidence / "clips"
+    snaps = evidence / "snapshots"
+    clips.mkdir(parents=True)
+    snaps.mkdir(parents=True)
+    events = []
+    for index in range(count):
+        frame = 60 + index * 15
+        clip = f"clips/clip_{frame:06d}.mp4"
+        snapshot = f"snapshots/snap_{frame:06d}.jpg"
+        (evidence / clip).write_bytes(f"video-{index}".encode())
+        (evidence / snapshot).write_bytes(f"image-{index}".encode())
+        events.append(
+            {
+                "event_id": f"e{index}",
+                "event_type": "lane_hogging_indication",
+                "timestamp": "2026-11-08T06:58:10",
+                "clip": clip,
+                "snapshot": snapshot,
+                "clip_duration_s": 8.0,
+                "clip_start_s": 0.0,
+                "clip_end_s": 8.0,
+            }
+        )
+    index = {"run_id": "run_multi", "camera_id": "cam_01", "events": events}
+    path = evidence / "index.json"
+    path.write_text(json.dumps(index), encoding="utf-8")
+    return path
+
+
+def test_ensure_dir_creates_each_level_once():
+    session = FakeSession()
+    uploader = NextcloudUploader(
+        NextcloudConfig(username="user", app_password="pass"), session=session
+    )
+    clips = "TrafficAnalytics/events/cam_01/2026/11/08/run_a/clips"
+
+    uploader.ensure_dir(clips)
+    first = [call for call in session.calls if call[0] == "MKCOL"]
+    assert len(first) == len(clips.split("/"))
+
+    uploader.ensure_dir(clips)
+    uploader.ensure_dir(clips.rsplit("/", 1)[0] + "/snapshots")
+    after = [call for call in session.calls if call[0] == "MKCOL"]
+    # Only the new ``snapshots`` level needs a request; the prefix is cached.
+    assert len(after) == len(clips.split("/")) + 1
+
+
+def test_upload_evidence_uploads_multiple_files_in_parallel(tmp_path: Path):
+    index = make_multi_index(tmp_path, count=4)
+    session = FakeSession()
+
+    result = upload_evidence(
+        index,
+        config=NextcloudConfig(username="user", app_password="pass", retries=1),
+        session=session,
+        skip_existing=False,
+        workers=2,
+        sleep=lambda _: None,
+    )
+
+    assert result.uploaded == 4
+    assert result.failed == 0
+    assert len(result.by_event_id()) == 4
+    assert sum(1 for call in session.calls if call[0] == "PUT") == 8  # 4 clips + 4 snaps
+
+
+def test_upload_workers_read_from_secret(monkeypatch):
+    import lane_analytics.media as media
+
+    monkeypatch.setattr(media, "_secret", {"NEXTCLOUD_UPLOAD_WORKERS": "3"}.get)
+    assert media._upload_workers() == 3
+    assert media._upload_workers(0) == 1

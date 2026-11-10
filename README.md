@@ -644,9 +644,11 @@ lane-analytics replay ... --media-manifest output/evidence/<run_id>/media_manife
 Credentials come from `NEXTCLOUD_URL`, `NEXTCLOUD_USER`, and
 `NEXTCLOUD_APP_PASSWORD` (environment or Kaggle/Colab Secrets). Uploads are verified
 with a `HEAD` size check after every `PUT`; `COMPLETED` is only reported when the
-stored size matches. In the production notebook, set `UPLOAD_MEDIA = True`; the live
-and Drive-window paths then upload only `lane_hogging_indication` clips and merge the
-media fields before replay. See
+stored size matches. Files are uploaded in parallel (4 workers by default,
+`NEXTCLOUD_UPLOAD_WORKERS`) and created folders are cached, so a window no longer
+spends minutes on repeated `MKCOL`/`HEAD` requests. In the production notebook, set
+`UPLOAD_MEDIA = True`; upload and replay then run in the background through
+`PostQueue` while the next window is captured. See
 [docs/NEXTCLOUD_MEDIA.md](docs/NEXTCLOUD_MEDIA.md) for the path layout, event
 fields, status values, and the signed-proxy plan.
 

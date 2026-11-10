@@ -23,6 +23,62 @@ The host records with `ffmpeg -live_start_index 0`, stream copy, `+faststart`, n
 audio. It subtracts the playlist backlog from the wall clock so `started_at` is the
 real WIB time of the first frame.
 
+## Throughput (30 s window in <30 s)
+
+Measured on 2026-11-10, a 30 s window took 254 s. The cost was not bandwidth: the
+18 evidence files were only 5.0 MB, but every file re-issued one `MKCOL` per path
+level plus two `HEAD`s, ~10 serial WebDAV requests per file over Cloudflare.
+
+| Stage | Before | After |
+| --- | --- | --- |
+| capture + download | 17 s | 17 s, overlapped with processing (prefetch) |
+| inference (540 frames) | 9.1 s | 9.1 s |
+| evidence (9 clips + 9 snapshots) | 10 s | ~4 s (4 workers) |
+| Nextcloud upload (18 files) | 210 s | ~15-20 s, in the background |
+| replay | 6-11 s | in the background, ordered |
+| **window wall** | **254 s** | **~17-20 s** |
+
+What changed:
+
+- `NextcloudUploader` caches collections it has created, so each path level gets
+  one `MKCOL` instead of one per file; upload workers get their own
+  `requests.Session`.
+- `upload_evidence(..., workers=4)` uploads files in parallel (`PUT` + size `HEAD`
+  per file stays sequential inside a worker). Override with
+  `NEXTCLOUD_UPLOAD_WORKERS`.
+- `generate_evidence(..., clip_workers=4)` writes snapshots and encodes clips in
+  parallel. Pass `1` for the old sequential behaviour.
+- `PostQueue` moves upload + replay off the capture path. Uploads of consecutive
+  windows run in parallel; a single replay worker keeps webhook delivery ordered.
+  Call `drain()` before the notebook cell ends.
+- The notebook prefetches window N+1 with `fetch_capture` while window N is
+  processed, then calls `activate(source="file", video_path=...)`.
+
+```python
+from lane_analytics.capture import fetch_capture
+from lane_analytics.colab import PostQueue, activate
+
+queue = PostQueue(upload_workers=2)
+capture = fetch_capture(
+    "https://lane-api.syaifudin-fam.my.id",
+    token,
+    seconds=30,
+    url=STREAM_URL,
+)
+activate(
+    source="file",
+    video_path=capture.path,
+    base_timestamp=capture.started_at,
+    upload_media=True,
+    replay=True,
+    post_queue=queue,   # returns immediately; upload + replay run in the background
+)
+queue.drain()           # at the end of the cell
+```
+
+An upload failure is recorded on the item (`media_error`) and the window is still
+replayed without media fields; it never aborts the run.
+
 ## Usage
 
 ```python
