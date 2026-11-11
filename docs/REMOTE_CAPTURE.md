@@ -23,36 +23,43 @@ The host records with `ffmpeg -live_start_index 0`, stream copy, `+faststart`, n
 audio. It subtracts the playlist backlog from the wall clock so `started_at` is the
 real WIB time of the first frame.
 
-## Throughput (30 s window in <30 s)
+## Latency (events first, evidence later)
 
-Measured on 2026-11-10, a 30 s window took 254 s. The cost was not bandwidth: the
-18 evidence files were only 5.0 MB, but every file re-issued one `MKCOL` per path
-level plus two `HEAD`s, ~10 serial WebDAV requests per file over Cloudflare.
+Measured on 2026-11-11 with 10 live windows (`live_20261111_105429`, daytime
+traffic, 124-184 events/window):
 
-| Stage | Before | After |
+| Stage | Old (2026-11-10) | New |
 | --- | --- | --- |
-| capture + download | 17 s | 17 s, overlapped with processing (prefetch) |
-| inference (540 frames) | 9.1 s | 9.1 s |
-| evidence (9 clips + 9 snapshots) | 10 s | ~4 s (4 workers) |
-| Nextcloud upload (18 files) | 210 s | ~15-20 s, in the background |
-| replay | 6-11 s | in the background, ordered |
-| **window wall** | **254 s** | **~17-20 s** |
+| capture + processing + evidence | 61 s | 70 s |
+| waiting for media (secrets + queue) | 273 s | 43 s |
+| Nextcloud upload | 25 s | 45 s |
+| replay + ingest | 10 s | 7 s |
+| **average delivery lag** | **368 s** | **167 s** |
+
+The new lag is flat per window instead of growing; the remaining upload cost no
+longer gates delivery.
 
 What changed:
 
-- `NextcloudUploader` caches collections it has created, so each path level gets
-  one `MKCOL` instead of one per file; upload workers get their own
-  `requests.Session`.
-- `upload_evidence(..., workers=4)` uploads files in parallel (`PUT` + size `HEAD`
-  per file stays sequential inside a worker). Override with
-  `NEXTCLOUD_UPLOAD_WORKERS`.
-- `generate_evidence(..., clip_workers=4)` writes snapshots and encodes clips in
-  parallel. Pass `1` for the old sequential behaviour.
-- `PostQueue` moves upload + replay off the capture path. Uploads of consecutive
-  windows run in parallel; a single replay worker keeps webhook delivery ordered.
-  Call `drain()` before the notebook cell ends.
-- The notebook prefetches window N+1 with `fetch_capture` while window N is
-  processed, then calls `activate(source="file", video_path=...)`.
+- Events, tracks, and the run record are replayed as soon as `process_video`
+  returns (`media_manifest=None`). Evidence encoding and the Nextcloud upload
+  happen afterwards in the `PostQueue` media workers.
+- Clips are attached later through `POST /webhook/media` on the pipeline
+  receiver. The payload is one `media` list per run; `fact_media` /
+  `fact_media_event` upsert, so retries are safe. Nothing waits for it.
+- `PostQueue` now has two independent ordered queues: replay (immediate) and
+  media (evidence -> upload -> patch). `drain()` waits for both.
+- `annotate_media=True` renders evidence clips/snapshots with all lane polygons
+  plus the bounding box of the vehicle that caused the event. Other vehicles are
+  left unboxed. A per-frame `frames.jsonl` log is written during processing and
+  used for the boxes; clips are encoded with OpenCV and transcoded to H.264.
+- Evidence is deferred only when `upload_media=True`; without it the run still
+  generates evidence inline.
+- Nextcloud config is still resolved per upload. All optional secret names
+  (`NEXTCLOUD_TIMEOUT`, `NEXTCLOUD_RETRIES`, `NEXTCLOUD_MAX_SIMPLE_UPLOAD_MB`,
+  `NEXTCLOUD_VERIFY_TLS`, `NEXTCLOUD_UPLOAD_WORKERS`) must exist in Kaggle
+  Secrets; a missing secret makes `get_secret` fail slowly and used to add
+  ~80-100 s per window.
 
 ```python
 from lane_analytics.capture import fetch_capture
@@ -70,14 +77,15 @@ activate(
     video_path=capture.path,
     base_timestamp=capture.started_at,
     upload_media=True,
+    annotate_media=True,
     replay=True,
-    post_queue=queue,   # returns immediately; upload + replay run in the background
+    post_queue=queue,   # events posted immediately; media follows in the background
 )
 queue.drain()           # at the end of the cell
 ```
 
-An upload failure is recorded on the item (`media_error`) and the window is still
-replayed without media fields; it never aborts the run.
+A media failure is recorded on the item (`media_error`) and never affects the
+events that were already delivered.
 
 ## Usage
 

@@ -188,6 +188,9 @@ def test_activate_uploads_media_and_merges_manifest(tmp_path: Path, monkeypatch)
             evidence_dir=str(tmp_path / "evidence"),
             evidence_index=str(index),
             camera_id="cam_01",
+            input_video=str(tmp_path / "clip.mp4"),
+            start_frame=0,
+            source_fps=18.0,
             events_path=str(tmp_path / "events.jsonl"),
             tracks_path=str(tmp_path / "tracks.jsonl"),
             reports_dir=str(tmp_path / "reports"),
@@ -208,9 +211,23 @@ def test_activate_uploads_media_and_merges_manifest(tmp_path: Path, monkeypatch)
         captured["replay"] = kwargs
         return SimpleNamespace(as_dict=lambda: {})
 
+    def fake_evidence(**kwargs):
+        captured["evidence"] = kwargs
+        return SimpleNamespace(
+            index_path=str(index),
+            directory=str(tmp_path / "evidence"),
+            event_count=1,
+            snapshot_count=1,
+            clip_count=1,
+        )
+
     monkeypatch.setattr("lane_analytics.colab._process_one", fake_process_one)
     monkeypatch.setattr("lane_analytics.media.upload_evidence", fake_upload)
+    monkeypatch.setattr("lane_analytics.evidence.generate_evidence", fake_evidence)
     monkeypatch.setattr("lane_analytics.colab.replay_run", fake_replay)
+    monkeypatch.setattr(
+        "lane_analytics.colab.post_media_patch", lambda *a, **k: {"sent": 1}
+    )
 
     result = activate(
         source="drive_zip",
@@ -225,10 +242,11 @@ def test_activate_uploads_media_and_merges_manifest(tmp_path: Path, monkeypatch)
 
     assert result.processed == 1
     assert captured["upload"]["camera_id"] == "cam_01"
-    assert captured["replay"]["media_manifest"] == {
-        "e1": {"media_id": "m1", "video_path": "clips/a.mp4"}
-    }
+    # Events are replayed without media; the manifest arrives via the patch.
+    assert captured["replay"]["media_manifest"] is None
     assert result.videos[0]["media"]["uploaded"] == 1
+    assert result.videos[0]["media_patch"] == {"sent": 1}
+    assert captured["evidence"]["annotate"] is False
 
 
 def test_activate_accepts_session_and_run_id(tmp_path: Path, monkeypatch):
@@ -298,46 +316,46 @@ def make_batch(tmp_path: Path) -> SimpleNamespace:
         evidence_dir=str(tmp_path / "evidence"),
         evidence_index=str(index),
         camera_id="cam_01",
+        input_video=str(tmp_path / "clip.mp4"),
+        start_frame=0,
+        source_fps=18.0,
         events_path=str(tmp_path / "events.jsonl"),
         tracks_path=str(tmp_path / "tracks.jsonl"),
         reports_dir=str(tmp_path / "reports"),
     )
 
 
-def test_post_queue_orders_replay_and_survives_upload_failure():
-    seen = []
+def test_post_queue_replays_before_media_finishes():
+    sent = threading.Event()
+    order = []
 
-    def upload_fail():
-        time.sleep(0.05)
+    def replay_first():
+        order.append("replay-0")
+        sent.set()
+
+    def replay_second():
+        order.append("replay-1")
+
+    def slow_media():
+        sent.wait(5)
+        order.append("media-0")
         raise RuntimeError("nextcloud down")
 
-    def upload_ok():
-        return FakeMediaResult()
-
-    def replay_first(media):
-        seen.append((0, media))
-
-    def replay_second(media):
-        seen.append((1, media))
-
     items = [{"window_index": 0}, {"window_index": 1}]
-    queue = PostQueue(upload_workers=2)
-    queue.submit(items[0], run_id="w0", upload=upload_fail, replay=replay_first)
-    queue.submit(items[1], run_id="w1", upload=upload_ok, replay=replay_second)
+    queue = PostQueue(upload_workers=1)
+    queue.submit(items[0], run_id="w0", replay=replay_first, media=slow_media)
+    queue.submit(items[1], run_id="w1", replay=replay_second)
     jobs = queue.drain(timeout=10)
 
-    # Replay is ordered by submission even though the failed upload ran first.
-    assert [window for window, _ in seen] == [0, 1]
-    assert seen[0][1] is None  # failed upload still replays, without media
-    assert seen[1][1] is not None
+    # Replay never waits for evidence/upload and keeps submission order.
+    assert order[:2] == ["replay-0", "replay-1"]
     assert jobs[0].item["media_error"].startswith("RuntimeError")
     assert jobs[0].item["status"] == "ok"
-    assert jobs[1].item["media"] == {"uploaded": 1, "failed": 0}
     assert all(job.done.is_set() for job in jobs)
 
 
 def test_post_queue_marks_replay_failure_on_item():
-    def fail(_media):
+    def fail():
         raise RuntimeError("webhook down")
 
     item = {"window_index": 0}
@@ -428,6 +446,7 @@ def test_activate_post_queue_defers_upload_and_replay(tmp_path: Path, monkeypatc
 
     release = threading.Event()
     replay_calls: list = []
+    patch_calls: list = []
 
     def fake_process_one(video_path, **kwargs):
         return make_batch(tmp_path)
@@ -436,13 +455,28 @@ def test_activate_post_queue_defers_upload_and_replay(tmp_path: Path, monkeypatc
         release.wait(5)
         return FakeMediaResult()
 
+    def fake_evidence(**kwargs):
+        return SimpleNamespace(
+            index_path=str(tmp_path / "index.json"),
+            directory=str(tmp_path / "evidence"),
+            event_count=1,
+            snapshot_count=1,
+            clip_count=1,
+        )
+
     def fake_replay(*args, **kwargs):
         replay_calls.append(kwargs.get("media_manifest"))
         return SimpleNamespace(as_dict=lambda: {"events_sent": 1})
 
+    def fake_patch(result, **kwargs):
+        patch_calls.append(result)
+        return {"sent": 1}
+
     monkeypatch.setattr("lane_analytics.colab._process_one", fake_process_one)
     monkeypatch.setattr("lane_analytics.media.upload_evidence", fake_upload)
+    monkeypatch.setattr("lane_analytics.evidence.generate_evidence", fake_evidence)
     monkeypatch.setattr("lane_analytics.colab.replay_run", fake_replay)
+    monkeypatch.setattr("lane_analytics.colab.post_media_patch", fake_patch)
 
     queue = PostQueue(upload_workers=1)
     result = activate(
@@ -458,12 +492,18 @@ def test_activate_post_queue_defers_upload_and_replay(tmp_path: Path, monkeypatc
 
     item = result.videos[0]
     assert item["status"] == "ok"
+
+    # Replay is posted immediately; evidence and upload are still blocked.
+    replay_deadline = time.monotonic() + 5
+    while "replay" not in item and time.monotonic() < replay_deadline:
+        time.sleep(0.01)
+    assert item["replay"] == {"events_sent": 1}
     assert "media" not in item
-    assert "replay" not in item
+    assert replay_calls == [None]
 
     release.set()
     queue.drain(timeout=10)
 
     assert item["media"] == {"uploaded": 1, "failed": 0}
-    assert item["replay"] == {"events_sent": 1}
-    assert replay_calls == [{"e1": {"media_id": "m1", "video_path": "clips/a.mp4"}}]
+    assert item["media_patch"] == {"sent": 1}
+    assert len(patch_calls) == 1

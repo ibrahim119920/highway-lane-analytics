@@ -35,7 +35,13 @@ from typing import Any, Callable, Sequence
 
 from .capture import DEFAULT_STREAM_URL
 from .config import load_config
-from .replay import DEFAULT_BASE_URL, DEFAULT_SOURCE, ReplayResult, replay_run
+from .replay import (
+    DEFAULT_BASE_URL,
+    DEFAULT_SOURCE,
+    ReplayResult,
+    post_media_patch,
+    replay_run,
+)
 from .utils import ensure_dir
 
 log = logging.getLogger(__name__)
@@ -80,43 +86,52 @@ class ActivationResult:
 
 @dataclass
 class PostJob:
-    """One window's media upload + replay, run off the live critical path."""
+    """One window: replay runs immediately, media (evidence+upload+patch) after."""
 
     item: dict[str, Any]
     run_id: str = ""
-    upload: Callable[[], Any] | None = None
-    replay: Callable[[Any], Any] | None = None
-    upload_future: Any = None
+    replay: Callable[[], Any] | None = None
+    media: Callable[[], Any] | None = None
     replay_result: Any = None
+    media_result: Any = None
     error: str = ""
+    replay_done: threading.Event = field(default_factory=threading.Event)
+    media_done: threading.Event = field(default_factory=threading.Event)
     done: threading.Event = field(default_factory=threading.Event)
 
 
 class PostQueue:
-    """Upload and replay windows in the background.
+    """Deliver events immediately and post evidence afterwards.
 
-    Uploads for consecutive windows run in parallel (``upload_workers``), while a
-    single replay worker keeps webhook delivery ordered by window index. An
-    upload failure is recorded on the item and the window is still replayed
-    without media fields, so a Nextcloud outage never loses events.
+    A replay worker posts each window's events/tracks/run as soon as processing
+    finishes, so the dashboard never waits for evidence. ``upload_workers``
+    background workers then generate evidence, upload the clips, and send the
+    late media patch. Both queues are consumed in submission (window) order, and
+    a media failure is recorded on the item without touching the events.
 
     Call :meth:`drain` before the notebook cell ends; otherwise the interpreter
-    can exit while uploads are still in flight.
+    can exit while media is still in flight.
     """
 
     def __init__(self, *, upload_workers: int = 2) -> None:
-        self._upload_pool = ThreadPoolExecutor(
-            max_workers=max(1, int(upload_workers)),
-            thread_name_prefix="post-upload",
-        )
         self._replay_queue: queue.Queue[PostJob | None] = queue.Queue()
+        self._media_queue: queue.Queue[PostJob | None] = queue.Queue()
         self._jobs: list[PostJob] = []
         self._lock = threading.Lock()
         self._closed = False
+        self._media_workers = max(1, int(upload_workers))
         self._replay_thread = threading.Thread(
             target=self._replay_loop, name="post-replay", daemon=True
         )
+        self._media_threads = [
+            threading.Thread(
+                target=self._media_loop, name=f"post-media-{index}", daemon=True
+            )
+            for index in range(self._media_workers)
+        ]
         self._replay_thread.start()
+        for thread in self._media_threads:
+            thread.start()
 
     @property
     def jobs(self) -> list[PostJob]:
@@ -130,31 +145,21 @@ class PostQueue:
         item: dict[str, Any],
         *,
         run_id: str = "",
-        upload: Callable[[], Any] | None = None,
-        replay: Callable[[Any], Any] | None = None,
+        replay: Callable[[], Any] | None = None,
+        media: Callable[[], Any] | None = None,
     ) -> PostJob:
-        job = PostJob(item=item, run_id=run_id, upload=upload, replay=replay)
+        job = PostJob(item=item, run_id=run_id, replay=replay, media=media)
         with self._lock:
             if self._closed:
                 raise RuntimeError("PostQueue is already closed")
-            job.upload_future = self._upload_pool.submit(self._run_upload, job)
             self._jobs.append(job)
-            # Enqueue in submission (window) order; the single replay worker
-            # waits for this job's upload before posting it.
             self._replay_queue.put(job)
+            self._media_queue.put(job)
         return job
 
-    def _run_upload(self, job: PostJob) -> Any:
-        if job.upload is None:
-            return None
-        try:
-            media = job.upload()
-        except Exception as exc:  # upload failure must not lose the run
-            log.warning("Media upload failed for %s: %s", job.run_id, exc)
-            job.item["media_error"] = f"{type(exc).__name__}: {exc}"
-            return None
-        job.item["media"] = media.as_dict() if hasattr(media, "as_dict") else media
-        return media
+    def _finish(self, job: PostJob) -> None:
+        if job.replay_done.is_set() and job.media_done.is_set():
+            job.done.set()
 
     def _replay_loop(self) -> None:
         while True:
@@ -163,14 +168,11 @@ class PostQueue:
                 self._replay_queue.task_done()
                 return
             try:
-                media = job.upload_future.result()
                 if job.replay is not None:
-                    replay_result = job.replay(media)
-                    job.replay_result = replay_result
+                    result = job.replay()
+                    job.replay_result = result
                     job.item["replay"] = (
-                        replay_result.as_dict()
-                        if hasattr(replay_result, "as_dict")
-                        else replay_result
+                        result.as_dict() if hasattr(result, "as_dict") else result
                     )
                 job.item.setdefault("status", "ok")
             except Exception as exc:
@@ -179,11 +181,34 @@ class PostQueue:
                 job.item["status"] = "error"
                 job.item["error"] = job.error
             finally:
-                job.done.set()
+                job.replay_done.set()
+                self._finish(job)
                 self._replay_queue.task_done()
 
+    def _media_loop(self) -> None:
+        while True:
+            job = self._media_queue.get()
+            if job is None:
+                self._media_queue.task_done()
+                return
+            try:
+                if job.media is not None:
+                    result = job.media()
+                    job.media_result = result
+                    if result is not None:
+                        job.item["media"] = (
+                            result.as_dict() if hasattr(result, "as_dict") else result
+                        )
+            except Exception as exc:  # media failure must not affect the events
+                log.warning("Media pipeline failed for %s: %s", job.run_id, exc)
+                job.item["media_error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                job.media_done.set()
+                self._finish(job)
+                self._media_queue.task_done()
+
     def drain(self, timeout: float | None = None) -> list[PostJob]:
-        """Wait for every submitted window, then stop the worker threads."""
+        """Wait for replay and media of every window, then stop the workers."""
         deadline = None if timeout is None else time.monotonic() + float(timeout)
         for job in list(self._jobs):
             remaining = (
@@ -194,9 +219,13 @@ class PostQueue:
             if not self._closed:
                 self._closed = True
                 self._replay_queue.put(None)
+                for _ in range(self._media_workers):
+                    self._media_queue.put(None)
         remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
         self._replay_thread.join(remaining)
-        self._upload_pool.shutdown(wait=False)
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        for thread in self._media_threads:
+            thread.join(remaining)
         return list(self._jobs)
 
 
@@ -477,6 +506,8 @@ def _process_one(
     window_count: int | None = None,
     upload_media: bool = False,
     media_event_types: Sequence[str] = ("lane_hogging_indication",),
+    defer_evidence: bool = False,
+    frame_log_path: str | Path | None = None,
 ):
     from .pipeline import process_video
 
@@ -500,10 +531,12 @@ def _process_one(
         config,
         write_video=render_video,
         generate_reports=True,
+        generate_evidence=not defer_evidence,
         run_id=run_id,
         session_id=session_id,
         window_index=window_index,
         window_count=window_count,
+        frame_log_path=frame_log_path,
     )
 
 
@@ -533,6 +566,7 @@ def activate(
     media_root: str = "TrafficAnalytics",
     media_event_types: Sequence[str] = ("lane_hogging_indication",),
     media_manifest_path: str | Path | None = None,
+    annotate_media: bool = False,
     replay: bool = True,
     webhook_url: str | None = None,
     webhook_token: str | None = None,
@@ -701,10 +735,22 @@ def activate(
             "Use replay=False to only run the batch pipeline."
         )
 
+    # Evidence is always generated after the window has been replayed, so the
+    # dashboard never waits for clip encoding or the Nextcloud upload.
+    defer_evidence = bool(upload_media)
+    evidence_config = load_config(config_path) if upload_media else None
+    if evidence_config is not None:
+        evidence_config.evidence.enabled = True
+        evidence_config.evidence.event_types = [
+            str(name) for name in media_event_types
+        ]
+
     print(f"Activation source : {kind}")
     print(f"Videos found      : {len(videos)}")
     print(f"Device            : {device}")
     print(f"Replay            : {'dry-run' if dry_run else ('yes' if replay else 'no')}")
+    print(f"Evidence          : {'after replay' if defer_evidence else 'inline'}"
+          + (" (annotated)" if defer_evidence and annotate_media else ""))
     print()
 
     for index, video in enumerate(videos, start=1):
@@ -725,6 +771,15 @@ def activate(
                 f"[{index}/{len(videos)}] {video.name} -> run_id={effective_run_id}"
                 + (f" session={session_id} window={window_index}/{window_count}" if session_id else "")
             )
+            frame_log_path = None
+            if defer_evidence and annotate_media and evidence_config is not None:
+                from .pipeline import evidence_output_dir
+
+                frame_log_path = (
+                    evidence_output_dir(evidence_config, effective_run_id)
+                    / "frames.jsonl"
+                )
+
             batch = _process_one(
                 video,
                 run_id=effective_run_id,
@@ -740,6 +795,8 @@ def activate(
                 window_count=window_count,
                 upload_media=upload_media,
                 media_event_types=media_event_types,
+                defer_evidence=defer_evidence,
+                frame_log_path=frame_log_path,
             )
             item["vehicles"] = batch.total_vehicles
             item["events"] = batch.total_events
@@ -749,10 +806,55 @@ def activate(
             item["evidence_clips"] = batch.evidence_clips
             item["evidence_dir"] = batch.evidence_dir
 
-            def _upload_media(
+            def _media_chain(
                 _batch: Any = batch, _run_id: str = effective_run_id
             ) -> Any:
+                from .evidence import generate_evidence
                 from .media import upload_evidence
+                from .pipeline import build_lane_regions, evidence_output_dir
+
+                index_path = _batch.evidence_index
+                if defer_evidence and evidence_config is not None:
+                    evidence_result = generate_evidence(
+                        run_id=_run_id,
+                        events_path=_batch.events_path,
+                        video_path=_batch.input_video,
+                        output_dir=evidence_output_dir(
+                            evidence_config, _run_id
+                        ),
+                        camera_id=_batch.camera_id,
+                        event_types=evidence_config.evidence.event_types,
+                        before_seconds=evidence_config.evidence.before_seconds,
+                        after_seconds=evidence_config.evidence.after_seconds,
+                        snapshot_format=evidence_config.evidence.snapshot_format,
+                        snapshot_quality=evidence_config.evidence.snapshot_quality,
+                        clip_codec=evidence_config.evidence.clip_codec,
+                        clip_preset=evidence_config.evidence.clip_preset,
+                        clip_crf=evidence_config.evidence.clip_crf,
+                        clip_max_bitrate_kbps=(
+                            evidence_config.evidence.clip_max_bitrate_kbps
+                        ),
+                        max_clips=evidence_config.evidence.max_clips,
+                        time_offset_s=(
+                            _batch.start_frame / _batch.source_fps
+                            if _batch.source_fps
+                            else 0.0
+                        ),
+                        annotate=annotate_media,
+                        frame_log_path=frame_log_path,
+                        lanes=(
+                            build_lane_regions(evidence_config)
+                            if annotate_media
+                            else ()
+                        ),
+                    )
+                    index_path = evidence_result.index_path
+                    _batch.evidence_index = index_path
+                    _batch.evidence_dir = evidence_result.directory
+                    item["evidence_dir"] = evidence_result.directory
+                    item["evidence_events"] = evidence_result.event_count
+                    item["evidence_snapshots"] = evidence_result.snapshot_count
+                    item["evidence_clips"] = evidence_result.clip_count
 
                 manifest_target = None
                 if media_manifest_path:
@@ -762,23 +864,32 @@ def activate(
                         if base.suffix.lower() == ".json"
                         else base / f"{_run_id}_media.json"
                     )
-                return upload_evidence(
-                    _batch.evidence_index or "",
+                media_result = upload_evidence(
+                    index_path or "",
                     camera_id=_batch.camera_id,
                     root=media_root,
                     event_types=media_event_types,
                     dry_run=dry_run,
                     manifest_path=manifest_target,
                 )
+                item["media"] = media_result.as_dict()
+                if replay:
+                    item["media_patch"] = post_media_patch(
+                        media_result,
+                        url=webhook_url,
+                        token=webhook_token,
+                        run_id=_run_id,
+                        camera_id=_batch.camera_id,
+                        source=f"{replay_source or DEFAULT_SOURCE}-media",
+                        dry_run=dry_run,
+                        retries=max(1, min(int(retries), 3)),
+                    )
+                return media_result
 
             def _replay(
-                media_result: Any,
                 _batch: Any = batch,
                 _run_id: str = effective_run_id,
             ) -> Any:
-                media_fields = (
-                    media_result.by_event_id() if media_result is not None else None
-                )
                 return replay_run(
                     _batch.events_path,
                     tracks_path=_batch.tracks_path,
@@ -797,35 +908,32 @@ def activate(
                     retries=retries,
                     health_attempts=health_attempts,
                     health_delay=health_delay,
-                    media_manifest=media_fields,
+                    media_manifest=None,
                     dry_run=dry_run,
                     skip_health_check=skip_health_check,
                 )
 
             if post_queue is not None:
-                # Capture and processing of the next window start as soon as
-                # this call returns; upload + replay finish in the background.
+                # Events are posted as soon as processing ends; evidence and the
+                # media patch finish in the background.
                 post_queue.submit(
                     item,
                     run_id=effective_run_id,
-                    upload=_upload_media if upload_media else None,
                     replay=_replay if replay else None,
+                    media=_media_chain if upload_media else None,
                 )
             else:
-                media_result = None
+                if replay:
+                    replay_result = _replay()
+                    item["replay"] = replay_result.as_dict()
                 if upload_media:
                     try:
-                        media_result = _upload_media()
-                        item["media"] = media_result.as_dict()
+                        _media_chain()
                     except Exception as exc:  # media failure must not lose the run
                         log.warning(
-                            "Media upload failed for %s: %s", effective_run_id, exc
+                            "Media pipeline failed for %s: %s", effective_run_id, exc
                         )
                         item["media_error"] = f"{type(exc).__name__}: {exc}"
-
-                if replay:
-                    replay_result = _replay(media_result)
-                    item["replay"] = replay_result.as_dict()
             item["status"] = "ok"
         except Exception as exc:  # keep going with the remaining clips
             log.exception("Activation failed for %s", video)

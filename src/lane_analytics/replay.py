@@ -467,6 +467,89 @@ def post_json(
     raise ReplayError(f"POST {url} failed after {attempts + 1} attempts: {last_error}")
 
 
+def post_media_patch(
+    media_result: Any,
+    *,
+    url: str | None = None,
+    token: str | None = None,
+    run_id: str | None = None,
+    camera_id: str | None = None,
+    source: str = "kaggle-media",
+    retries: int = 2,
+    timeout: float = 20.0,
+    dry_run: bool = False,
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    """Attach already-uploaded clips to events that were replayed earlier.
+
+    Events are sent as soon as a window is processed; this patch carries the
+    media rows afterwards. It is safe to skip or retry because the pipeline
+    upserts on ``media_id``.
+    """
+    ready = {"COMPLETED", "PARTIAL", "SKIPPED"}
+    entries: list[dict[str, Any]] = []
+    skipped = 0
+    for entry in getattr(media_result, "entries", None) or []:
+        status = str(getattr(entry, "status", "") or "")
+        event_ids = [
+            str(event_id)
+            for event_id in (getattr(entry, "event_ids", None) or [])
+            if event_id
+        ]
+        media_id = str(getattr(entry, "media_id", "") or "")
+        video_path = str(getattr(entry, "video_path", "") or "")
+        if status not in ready or not event_ids or not media_id or not video_path:
+            skipped += 1
+            continue
+        entries.append(
+            {
+                "media_id": media_id,
+                "event_ids": event_ids,
+                "video_path": video_path,
+                "thumbnail_path": getattr(entry, "thumbnail_path", None),
+                "file_size": getattr(entry, "file_size", None),
+                "duration_s": getattr(entry, "duration_s", None),
+                "status": status,
+            }
+        )
+
+    run_id = run_id or str(getattr(media_result, "run_id", "") or "")
+    camera_id = camera_id or str(getattr(media_result, "camera_id", "") or "")
+    if not entries:
+        return {"sent": 0, "entries": 0, "skipped": skipped, "dry_run": dry_run}
+    if dry_run:
+        return {"sent": 0, "entries": len(entries), "skipped": skipped, "dry_run": True}
+
+    base = resolve_base_url(url)
+    if not token:
+        raise ReplayError("Media patch requires a pipeline token")
+    payload = {
+        "run_id": run_id,
+        "camera_id": camera_id,
+        "source": source,
+        "sent_at": _utc_now(),
+        "media": entries,
+    }
+    client = session or requests.Session()
+    target = endpoint(base, "/webhook/media")
+    response, retry_count = post_json(
+        client,
+        target,
+        payload,
+        headers=build_headers(token),
+        timeout=timeout,
+        retries=retries,
+    )
+    return {
+        "sent": len(entries),
+        "entries": len(entries),
+        "skipped": skipped,
+        "retries": retry_count,
+        "status": response.status_code,
+        "url": target,
+    }
+
+
 def check_health(
     base: str,
     *,

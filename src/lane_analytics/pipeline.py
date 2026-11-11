@@ -74,6 +74,16 @@ def _safe_run_id(value: str) -> str:
     return "".join(character if character in allowed else "_" for character in value).strip("_") or "run"
 
 
+def evidence_output_dir(config: AppConfig, run_id: str) -> Path:
+    """Directory that ``generate_evidence`` writes for one run."""
+    root = (
+        Path(config.evidence.output_dir)
+        if config.evidence.output_dir
+        else Path(config.output.dir) / "evidence"
+    )
+    return root / run_id
+
+
 def build_lane_regions(config: AppConfig) -> list[LaneRegion]:
     return [
         LaneRegion(
@@ -147,6 +157,7 @@ def process_video(
     reports_dir: str | Path | None = None,
     write_video: bool = True,
     generate_reports: bool = True,
+    generate_evidence: bool = True,
     run_id: str | None = None,
     start_frame: int = 0,
     session_id: str = "",
@@ -442,7 +453,8 @@ def process_video(
     duration_s = frames_in_run / source_fps if source_fps > 0 else 0.0
 
     evidence_result = None
-    if config.evidence.enabled:
+    evidence_deferred = bool(config.evidence.enabled and not generate_evidence)
+    if config.evidence.enabled and generate_evidence:
         media_video = (
             output_video_path
             if write_video and output_video_path.exists()
@@ -453,11 +465,7 @@ def process_video(
                 "Evidence uses the source video because the annotated video is disabled; "
                 "snapshots and clips will not show detection boxes."
             )
-        evidence_root = (
-            Path(config.evidence.output_dir)
-            if config.evidence.output_dir
-            else output_root / "evidence"
-        )
+        evidence_root = evidence_output_dir(config, run_id).parent
         try:
             from .evidence import generate_evidence
 
@@ -513,7 +521,17 @@ def process_video(
         "lanes": [lane.as_dict() for lane in lanes],
         "hogging_rules": [rule.name for rule in config.hogging.rules],
         "evidence": (
-            evidence_result.as_dict() if evidence_result is not None else {"enabled": False}
+            evidence_result.as_dict()
+            if evidence_result is not None
+            else (
+                {
+                    "enabled": True,
+                    "deferred": True,
+                    "directory": str(evidence_output_dir(config, run_id)),
+                }
+                if evidence_deferred
+                else {"enabled": False}
+            )
         ),
     }
     if session_id:
@@ -582,7 +600,15 @@ def process_video(
         events=[LaneEvent(**record) for record in event_records],
         tracks=track_records,
         start_frame=first_frame,
-        evidence_dir=evidence_result.directory if evidence_result else None,
+        evidence_dir=(
+            evidence_result.directory
+            if evidence_result is not None
+            else (
+                str(evidence_output_dir(config, run_id))
+                if evidence_deferred
+                else None
+            )
+        ),
         evidence_index=evidence_result.index_path if evidence_result else None,
         evidence_events=evidence_result.event_count if evidence_result else 0,
         evidence_snapshots=evidence_result.snapshot_count if evidence_result else 0,

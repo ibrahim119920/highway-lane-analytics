@@ -12,6 +12,7 @@ snapshot and one clip, so the files are not duplicated.
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import shutil
@@ -21,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 import cv2
 
@@ -179,6 +180,131 @@ def _relative(path: Path, root: Path) -> str:
         return path.as_posix()
 
 
+# --------------------------------------------------------------- annotation
+def load_frame_tracks(
+    path: str | Path,
+    *,
+    time_offset_s: float = 0.0,
+) -> dict[int, list[tuple[float, tuple[float, float, float, float]]]]:
+    """Index a ``frame_log`` JSONL by track id -> [(local time, bbox)]."""
+    source = Path(path)
+    tracks: dict[int, list[tuple[float, tuple[float, float, float, float]]]] = {}
+    if not source.exists():
+        return tracks
+    with source.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                record = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            try:
+                local_time = float(record.get("video_time_s")) - float(time_offset_s)
+            except (TypeError, ValueError):
+                continue
+            for item in record.get("objects") or []:
+                try:
+                    track_id = int(item["track_id"])
+                    bbox = tuple(float(value) for value in item["bbox"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if len(bbox) != 4:
+                    continue
+                tracks.setdefault(track_id, []).append((local_time, bbox))
+    for items in tracks.values():
+        items.sort(key=lambda entry: entry[0])
+    return tracks
+
+
+@dataclass
+class EvidenceOverlay:
+    """Draw lane polygons plus the bounding box of the event's own vehicle.
+
+    Other vehicles are intentionally left unboxed so a clip stays readable.
+    """
+
+    lanes: Sequence[Any] = ()
+    tracks: dict[int, list[tuple[float, tuple[float, float, float, float]]]] = field(
+        default_factory=dict
+    )
+    camera_id: str = ""
+    tolerance_s: float = 0.25
+    labels: dict[int, str] = field(default_factory=dict)
+    box_color: tuple[int, int, int] = (40, 40, 230)
+
+    def __post_init__(self) -> None:
+        from .annotator import Annotator
+
+        self._annotator = Annotator(list(self.lanes), self.camera_id, trail_length=0)
+        self._times = {
+            track_id: [entry[0] for entry in items]
+            for track_id, items in self.tracks.items()
+        }
+
+    def box_at(
+        self, track_id: int, time_s: float
+    ) -> tuple[float, float, float, float] | None:
+        items = self.tracks.get(track_id)
+        times = self._times.get(track_id)
+        if not items or not times:
+            return None
+        index = bisect.bisect_right(times, time_s) - 1
+        best: tuple[float, tuple[float, float, float, float]] | None = None
+        for candidate in (index, index + 1):
+            if 0 <= candidate < len(items):
+                moment, bbox = items[candidate]
+                delta = abs(moment - time_s)
+                if delta <= self.tolerance_s and (best is None or delta < best[0]):
+                    best = (delta, bbox)
+        return best[1] if best is not None else None
+
+    def draw(
+        self,
+        frame: Any,
+        *,
+        time_s: float,
+        track_ids: Iterable[int] = (),
+    ) -> Any:
+        self._annotator.draw_lanes(frame)
+        height, width = frame.shape[:2]
+        for track_id in track_ids:
+            bbox = self.box_at(int(track_id), time_s)
+            if bbox is None:
+                continue
+            x1, y1, x2, y2 = (int(round(value)) for value in bbox)
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(width - 1, x2), min(height - 1, y2)
+            if x2 <= x1 or y2 <= y1:
+                continue
+            cv2.rectangle(frame, (x1, y1), (x2, y2), self.box_color, 3, cv2.LINE_AA)
+            label = self.labels.get(int(track_id)) or f"id {track_id}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            scale = 0.6
+            thickness = 2
+            (text_w, text_h), baseline = cv2.getTextSize(label, font, scale, thickness)
+            top = max(0, y1 - text_h - baseline - 8)
+            cv2.rectangle(
+                frame,
+                (x1, top),
+                (x1 + text_w + 12, top + text_h + baseline + 8),
+                self.box_color,
+                -1,
+            )
+            cv2.putText(
+                frame,
+                label,
+                (x1 + 6, top + text_h + 4),
+                font,
+                scale,
+                (255, 255, 255),
+                thickness,
+                cv2.LINE_AA,
+            )
+        return frame
+
+
 def _snapshot_extension(fmt: str) -> str:
     value = str(fmt).lower()
     return "png" if value == "png" else "jpg"
@@ -192,6 +318,8 @@ def _write_snapshot(
     *,
     fmt: str,
     quality: int,
+    overlay: EvidenceOverlay | None = None,
+    track_ids: Iterable[int] = (),
 ) -> bool:
     capture = cv2.VideoCapture(str(video))
     if not capture.isOpened():
@@ -206,6 +334,8 @@ def _write_snapshot(
         capture.release()
     if not ok or frame is None:
         return False
+    if overlay is not None:
+        overlay.draw(frame, time_s=time_s, track_ids=track_ids)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if _snapshot_extension(fmt) == "png":
         return bool(cv2.imwrite(str(destination), frame))
@@ -294,6 +424,8 @@ def _write_clip_opencv(
     source_fps: float,
     width: int,
     height: int,
+    overlay: EvidenceOverlay | None = None,
+    track_ids: Iterable[int] = (),
 ) -> bool:
     capture = cv2.VideoCapture(str(video))
     if not capture.isOpened():
@@ -324,12 +456,95 @@ def _write_clip_opencv(
             ok, frame = capture.read()
             if not ok or frame is None:
                 break
+            if overlay is not None:
+                frame_time = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+                if frame_time <= 0:
+                    frame_time = start_s + written / fps
+                overlay.draw(frame, time_s=frame_time, track_ids=track_ids)
             writer.write(frame)
             written += 1
     finally:
         writer.release()
         capture.release()
     return written > 0 and destination.exists() and destination.stat().st_size > 0
+
+
+def _write_clip_annotated(
+    video: Path,
+    start_s: float,
+    end_s: float,
+    destination: Path,
+    *,
+    source_fps: float,
+    width: int,
+    height: int,
+    overlay: EvidenceOverlay,
+    track_ids: Iterable[int],
+    codec: str,
+    preset: str,
+    crf: int,
+    max_bitrate_kbps: int = 0,
+) -> bool:
+    """Render the clip with OpenCV, then transcode to browser-playable H.264."""
+    raw = destination.with_name(f"{destination.stem}.raw.mp4")
+    try:
+        if not _write_clip_opencv(
+            video,
+            start_s,
+            end_s,
+            raw,
+            source_fps=source_fps,
+            width=width,
+            height=height,
+            overlay=overlay,
+            track_ids=track_ids,
+        ):
+            return False
+        ffmpeg = _ffmpeg_exe()
+        if not ffmpeg:
+            raw.replace(destination)
+            return destination.exists() and destination.stat().st_size > 0
+        rate_args: list[str] = []
+        if max_bitrate_kbps and max_bitrate_kbps > 0:
+            rate = f"{int(max_bitrate_kbps)}k"
+            rate_args = ["-maxrate", rate, "-bufsize", f"{int(max_bitrate_kbps) * 2}k"]
+        command = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(raw),
+            "-an",
+            "-c:v",
+            codec,
+            "-preset",
+            preset,
+            "-crf",
+            str(crf),
+            *rate_args,
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(destination),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            log.warning(
+                "ffmpeg annotation transcode failed for %s: %s",
+                destination.name,
+                result.stderr.strip()[:200],
+            )
+            return False
+        return destination.exists() and destination.stat().st_size > 0
+    finally:
+        if raw.exists():
+            try:
+                raw.unlink()
+            except OSError:  # pragma: no cover - defensive
+                pass
 
 
 def _map_media(func, items: Sequence[Any], workers: int) -> list[Any]:
@@ -367,6 +582,9 @@ def generate_evidence(
     time_offset_s: float = 0.0,
     use_ffmpeg: bool = True,
     clip_workers: int | None = None,
+    annotate: bool = False,
+    frame_log_path: str | Path | None = None,
+    lanes: Sequence[Any] = (),
 ) -> EvidenceResult:
     """Build snapshot and clip evidence for the selected events of one run.
 
@@ -385,6 +603,22 @@ def generate_evidence(
     events = _load_jsonl(events_file)
     info = probe_video(video_file)
 
+    overlay: EvidenceOverlay | None = None
+    if annotate:
+        overlay = EvidenceOverlay(
+            lanes=list(lanes),
+            tracks=(
+                load_frame_tracks(frame_log_path, time_offset_s=time_offset_s)
+                if frame_log_path and Path(frame_log_path).exists()
+                else {}
+            ),
+            camera_id=camera_id,
+        )
+        if not overlay.tracks:
+            log.warning(
+                "Annotation requested but no frame log was found; clips show lanes only"
+            )
+
     root = Path(output_dir) if output_dir else Path("output") / "evidence" / run_id
     snapshots_dir = root / "snapshots"
     clips_dir = root / "clips"
@@ -401,6 +635,15 @@ def generate_evidence(
     prepared: list[dict[str, Any]] = []
     snapshot_specs: dict[Any, tuple[float, int | None]] = {}
     clip_specs: dict[tuple[float, float], tuple[float, float, int | None]] = {}
+    snapshot_focus: dict[Any, set[int]] = {}
+    clip_focus: dict[tuple[float, float], set[int]] = {}
+    focus_labels: dict[int, str] = {}
+
+    def _focus(event: dict[str, Any]) -> int | None:
+        try:
+            return int(event.get("track_id"))
+        except (TypeError, ValueError):
+            return None
 
     for event in selected:
         source_time = event_time_s(event, info.fps)
@@ -423,6 +666,20 @@ def generate_evidence(
         snapshot_specs.setdefault(snapshot_key, (local_time, local_frame))
         clip_key = (round(start, 3), round(end, 3))
         clip_specs.setdefault(clip_key, (start, end, local_frame))
+        if overlay is not None:
+            track_id = _focus(event)
+            if track_id is not None:
+                snapshot_focus.setdefault(snapshot_key, set()).add(track_id)
+                clip_focus.setdefault(clip_key, set()).add(track_id)
+                label = " ".join(
+                    part
+                    for part in (
+                        str(event.get("object_class") or "").strip(),
+                        str(event.get("lane_name") or "").strip(),
+                    )
+                    if part
+                )
+                focus_labels.setdefault(track_id, label or f"id {track_id}")
         prepared.append(
             {
                 "event": event,
@@ -437,6 +694,9 @@ def generate_evidence(
             }
         )
 
+    if overlay is not None:
+        overlay.labels = focus_labels
+
     extension = _snapshot_extension(snapshot_format)
     snapshot_paths: dict[Any, Path] = {}
 
@@ -450,6 +710,8 @@ def generate_evidence(
             destination,
             fmt=snapshot_format,
             quality=snapshot_quality,
+            overlay=overlay,
+            track_ids=snapshot_focus.get(key, ()),
         ):
             return key, destination, None
         return key, None, f"snapshot failed at {time_s:.2f}s (frame {frame})"
@@ -480,7 +742,23 @@ def generate_evidence(
         key, start, end, local_frame = item
         destination = clips_dir / f"clip_{_slug(local_frame if local_frame is not None else start)}.mp4"
         success = False
-        if use_ffmpeg:
+        if overlay is not None:
+            success = _write_clip_annotated(
+                video_file,
+                start,
+                end,
+                destination,
+                source_fps=info.fps,
+                width=info.width,
+                height=info.height,
+                overlay=overlay,
+                track_ids=clip_focus.get(key, ()),
+                codec=clip_codec,
+                preset=clip_preset,
+                crf=clip_crf,
+                max_bitrate_kbps=clip_max_bitrate_kbps,
+            )
+        elif use_ffmpeg:
             success = _write_clip_ffmpeg(
                 video_file,
                 start,
