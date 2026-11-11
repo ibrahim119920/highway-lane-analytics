@@ -439,6 +439,68 @@ def test_activate_post_queue_keeps_per_video_context(tmp_path: Path, monkeypatch
     ]
 
 
+def test_activate_post_queue_keeps_media_per_window(tmp_path: Path, monkeypatch):
+    archive = tmp_path / "videos.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("a.mp4", "dummy-a")
+        handle.writestr("b.mp4", "dummy-b")
+
+    uploads: list[str] = []
+
+    def fake_process_one(video_path, **kwargs):
+        batch = make_batch(tmp_path)
+        batch.input_video = str(video_path)
+        return batch
+
+    def fake_evidence(**kwargs):
+        return SimpleNamespace(
+            index_path=str(tmp_path / f"{kwargs['run_id']}.json"),
+            directory=str(tmp_path / kwargs["run_id"]),
+            event_count=1,
+            snapshot_count=1,
+            clip_count=1,
+        )
+
+    def fake_upload(index_path, **kwargs):
+        uploads.append(index_path)
+        return FakeMediaResult()
+
+    monkeypatch.setattr("lane_analytics.colab._process_one", fake_process_one)
+    monkeypatch.setattr("lane_analytics.evidence.generate_evidence", fake_evidence)
+    monkeypatch.setattr("lane_analytics.media.upload_evidence", fake_upload)
+    monkeypatch.setattr(
+        "lane_analytics.colab.replay_run",
+        lambda *a, **k: SimpleNamespace(as_dict=lambda: {}),
+    )
+    monkeypatch.setattr(
+        "lane_analytics.colab.post_media_patch", lambda *a, **k: {"sent": 1}
+    )
+
+    queue = PostQueue(upload_workers=2)
+    result = activate(
+        source="drive_zip",
+        zip_path=archive,
+        video_dir=tmp_path / "raw",
+        replay=True,
+        webhook_url="https://lane-api.example",
+        webhook_token="token",
+        upload_media=True,
+        post_queue=queue,
+    )
+    queue.drain(timeout=10)
+
+    # Each window's media job must use its own batch/item (no late binding).
+    assert sorted(uploads) == [str(tmp_path / "a.json"), str(tmp_path / "b.json")]
+    assert [item["media"] for item in result.videos] == [
+        {"uploaded": 1, "failed": 0},
+        {"uploaded": 1, "failed": 0},
+    ]
+    assert [item["media_patch"] for item in result.videos] == [
+        {"sent": 1},
+        {"sent": 1},
+    ]
+
+
 def test_activate_post_queue_defers_upload_and_replay(tmp_path: Path, monkeypatch):
     archive = tmp_path / "videos.zip"
     with zipfile.ZipFile(archive, "w") as handle:

@@ -807,7 +807,10 @@ def activate(
             item["evidence_dir"] = batch.evidence_dir
 
             def _media_chain(
-                _batch: Any = batch, _run_id: str = effective_run_id
+                _batch: Any = batch,
+                _run_id: str = effective_run_id,
+                _frame_log: Any = frame_log_path,
+                _item: dict[str, Any] = item,
             ) -> Any:
                 from .evidence import generate_evidence
                 from .media import upload_evidence
@@ -841,7 +844,7 @@ def activate(
                             else 0.0
                         ),
                         annotate=annotate_media,
-                        frame_log_path=frame_log_path,
+                        frame_log_path=_frame_log,
                         lanes=(
                             build_lane_regions(evidence_config)
                             if annotate_media
@@ -851,10 +854,10 @@ def activate(
                     index_path = evidence_result.index_path
                     _batch.evidence_index = index_path
                     _batch.evidence_dir = evidence_result.directory
-                    item["evidence_dir"] = evidence_result.directory
-                    item["evidence_events"] = evidence_result.event_count
-                    item["evidence_snapshots"] = evidence_result.snapshot_count
-                    item["evidence_clips"] = evidence_result.clip_count
+                    _item["evidence_dir"] = evidence_result.directory
+                    _item["evidence_events"] = evidence_result.event_count
+                    _item["evidence_snapshots"] = evidence_result.snapshot_count
+                    _item["evidence_clips"] = evidence_result.clip_count
 
                 manifest_target = None
                 if media_manifest_path:
@@ -872,9 +875,9 @@ def activate(
                     dry_run=dry_run,
                     manifest_path=manifest_target,
                 )
-                item["media"] = media_result.as_dict()
+                _item["media"] = media_result.as_dict()
                 if replay:
-                    item["media_patch"] = post_media_patch(
+                    _item["media_patch"] = post_media_patch(
                         media_result,
                         url=webhook_url,
                         token=webhook_token,
