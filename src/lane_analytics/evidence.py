@@ -184,11 +184,17 @@ def _relative(path: Path, root: Path) -> str:
 def load_frame_tracks(
     path: str | Path,
     *,
-    time_offset_s: float = 0.0,
-) -> dict[int, list[tuple[float, tuple[float, float, float, float]]]]:
-    """Index a ``frame_log`` JSONL by track id -> [(local time, bbox)]."""
+    frame_offset: int = 0,
+) -> dict[int, list[tuple[int, tuple[float, float, float, float]]]]:
+    """Index a ``frame_log`` JSONL by track id -> [(local frame, bbox)].
+
+    Frames are used instead of seconds because live HLS windows can have a real
+    frame rate below the nominal ``source_fps``; a time-based lookup then lags
+    the decoded frame by a fraction of a second, which is very visible for a
+    vehicle close to the camera.
+    """
     source = Path(path)
-    tracks: dict[int, list[tuple[float, tuple[float, float, float, float]]]] = {}
+    tracks: dict[int, list[tuple[int, tuple[float, float, float, float]]]] = {}
     if not source.exists():
         return tracks
     with source.open("r", encoding="utf-8") as handle:
@@ -201,7 +207,7 @@ def load_frame_tracks(
             except json.JSONDecodeError:
                 continue
             try:
-                local_time = float(record.get("video_time_s")) - float(time_offset_s)
+                local_frame = int(record.get("frame_index")) - int(frame_offset)
             except (TypeError, ValueError):
                 continue
             for item in record.get("objects") or []:
@@ -212,7 +218,7 @@ def load_frame_tracks(
                     continue
                 if len(bbox) != 4:
                     continue
-                tracks.setdefault(track_id, []).append((local_time, bbox))
+                tracks.setdefault(track_id, []).append((local_frame, bbox))
     for items in tracks.values():
         items.sort(key=lambda entry: entry[0])
     return tracks
@@ -226,11 +232,11 @@ class EvidenceOverlay:
     """
 
     lanes: Sequence[Any] = ()
-    tracks: dict[int, list[tuple[float, tuple[float, float, float, float]]]] = field(
+    tracks: dict[int, list[tuple[int, tuple[float, float, float, float]]]] = field(
         default_factory=dict
     )
     camera_id: str = ""
-    tolerance_s: float = 0.25
+    tolerance_frames: int = 2
     labels: dict[int, str] = field(default_factory=dict)
     box_color: tuple[int, int, int] = (40, 40, 230)
 
@@ -238,25 +244,25 @@ class EvidenceOverlay:
         from .annotator import Annotator
 
         self._annotator = Annotator(list(self.lanes), self.camera_id, trail_length=0)
-        self._times = {
+        self._frames = {
             track_id: [entry[0] for entry in items]
             for track_id, items in self.tracks.items()
         }
 
     def box_at(
-        self, track_id: int, time_s: float
+        self, track_id: int, frame_index: int
     ) -> tuple[float, float, float, float] | None:
         items = self.tracks.get(track_id)
-        times = self._times.get(track_id)
-        if not items or not times:
+        frames = self._frames.get(track_id)
+        if not items or not frames:
             return None
-        index = bisect.bisect_right(times, time_s) - 1
-        best: tuple[float, tuple[float, float, float, float]] | None = None
+        index = bisect.bisect_right(frames, frame_index) - 1
+        best: tuple[int, tuple[float, float, float, float]] | None = None
         for candidate in (index, index + 1):
             if 0 <= candidate < len(items):
                 moment, bbox = items[candidate]
-                delta = abs(moment - time_s)
-                if delta <= self.tolerance_s and (best is None or delta < best[0]):
+                delta = abs(moment - frame_index)
+                if delta <= self.tolerance_frames and (best is None or delta < best[0]):
                     best = (delta, bbox)
         return best[1] if best is not None else None
 
@@ -264,13 +270,13 @@ class EvidenceOverlay:
         self,
         frame: Any,
         *,
-        time_s: float,
+        frame_index: int,
         track_ids: Iterable[int] = (),
     ) -> Any:
         self._annotator.draw_lanes(frame)
         height, width = frame.shape[:2]
         for track_id in track_ids:
-            bbox = self.box_at(int(track_id), time_s)
+            bbox = self.box_at(int(track_id), int(frame_index))
             if bbox is None:
                 continue
             x1, y1, x2, y2 = (int(round(value)) for value in bbox)
@@ -324,18 +330,21 @@ def _write_snapshot(
     capture = cv2.VideoCapture(str(video))
     if not capture.isOpened():
         return False
+    draw_index = int(frame_index) if frame_index is not None else None
     try:
-        capture.set(cv2.CAP_PROP_POS_MSEC, max(0.0, time_s) * 1000.0)
-        ok, frame = capture.read()
-        if (not ok or frame is None) and frame_index is not None:
-            capture.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_index))
+        if frame_index is not None:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(frame_index)))
             ok, frame = capture.read()
+        else:
+            capture.set(cv2.CAP_PROP_POS_MSEC, max(0.0, time_s) * 1000.0)
+            ok, frame = capture.read()
+            draw_index = int(round(capture.get(cv2.CAP_PROP_POS_FRAMES))) - 1
     finally:
         capture.release()
     if not ok or frame is None:
         return False
-    if overlay is not None:
-        overlay.draw(frame, time_s=time_s, track_ids=track_ids)
+    if overlay is not None and draw_index is not None:
+        overlay.draw(frame, frame_index=max(0, draw_index), track_ids=track_ids)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if _snapshot_extension(fmt) == "png":
         return bool(cv2.imwrite(str(destination), frame))
@@ -453,14 +462,12 @@ def _write_clip_opencv(
     written = 0
     try:
         while written < frames_to_write:
+            index = int(round(capture.get(cv2.CAP_PROP_POS_FRAMES)))
             ok, frame = capture.read()
             if not ok or frame is None:
                 break
             if overlay is not None:
-                frame_time = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-                if frame_time <= 0:
-                    frame_time = start_s + written / fps
-                overlay.draw(frame, time_s=frame_time, track_ids=track_ids)
+                overlay.draw(frame, frame_index=max(0, index), track_ids=track_ids)
             writer.write(frame)
             written += 1
     finally:
@@ -605,10 +612,11 @@ def generate_evidence(
 
     overlay: EvidenceOverlay | None = None
     if annotate:
+        frame_offset = int(round(time_offset_s * info.fps)) if info.fps > 0 else 0
         overlay = EvidenceOverlay(
             lanes=list(lanes),
             tracks=(
-                load_frame_tracks(frame_log_path, time_offset_s=time_offset_s)
+                load_frame_tracks(frame_log_path, frame_offset=frame_offset)
                 if frame_log_path and Path(frame_log_path).exists()
                 else {}
             ),
